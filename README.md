@@ -1,3 +1,5 @@
+google-site-verification: google3e0efc2343505c83.html
+
 # Ratchet Art Studio | Hand-Crafted Premium 3D Assets
 
 I am a veteran 3D modeler with 20 years of hands-on experience specializing in heavy mechanical engineering, vehicle modeling, and high-fidelity asset creation. 
