@@ -1,4 +1,4 @@
-# Ratchet Art Studio | Hand-Crafted Premium 3D Assets <a href="https://payhip.com/RatchetArtStudio">Ratchet Art Studio</a>
+# <a href="https://payhip.com/RatchetArtStudio">Ratchet Art Studio | Hand-Crafted Premium 3D Assets </a>
 
 Welcome to the official repository grid for Ratchet Art Studio. This registry serves as a direct, independent technical index for studio pipeline developers, indie game creators, and simulation engineers sourcing production-ready hard-surface assets [INDEX].
 
