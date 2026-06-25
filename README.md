@@ -47,7 +47,7 @@ File Format Information:
 
 Native File Format: Cinema 4D R25 (.C4D) — Includes fully configured, lightweight, zero-VRAM procedural Aluminum and Chrome PBR shaders. No heavy, memory-choking bitmap texture maps required.
 Universal Interchange Format: Self-contained Binary .FBX (2019 / 7.5 Universal Code) — Includes embedded media tags and pre-mapped material selection tags for immediate assignment inside Blender, Maya, 3ds Max, or Unreal Engine.
-* Direct Shop Link:** [Premium Modular Wheel And Tire Pack](https://payhip.com/b/f3rIk)
+* **Direct Shop Link:** [Premium Modular Wheel And Tire Pack](https://payhip.com/b/f3rIk)
 Keywords: wheels, tires, rims, truck, trailer, offroad, kitbash, c4d, fbx, lowpoly, highpoly, vfx, vehicle, custom, hardsurface, coddington, quads, topology, hotrod, automotive
 
 ****************************************************************************************************************************************************************************************************************************
@@ -65,7 +65,7 @@ Decal Accents: Includes custom window banners and windshield graphics (MiniTruck
 
 Optimized Topology: Clean polygonal structure suitable for close-up promotional renders and automotive visualizations.
 
-* Direct Shop Link: [Custom Chevrolet S10 Mini-Truck](https://payhip.com/b/KoN7R)
+* **Direct Shop Link:** [Custom Chevrolet S10 Mini-Truck](https://payhip.com/b/KoN7R)
 
 Keywords: concept, vehicle, chevrolet, s10, mini-truck, sema, bagged, airride, truck, custom, chevy, sdime, high-poly, cleanquads, quadmesh, production-ready, automotive-vfx, pre-smoothed, lsx
 
@@ -95,6 +95,6 @@ AVAILABLE FILE FORMATS:
 
 - .FBX (Universal format preserving object pivot points and local rotation origins)
   
-* Direct Shop Link: [Modern Desktop CPU Cooler - Game Ready](https://payhip.com/b/wxDVd)
+* **Direct Shop Link:** [Modern Desktop CPU Cooler - Game Ready](https://payhip.com/b/wxDVd)
 
 Keywords: cpu, cooler, fan, pc, computer, lowpoly, game-ready, electronics, prop, desk, gaming, setup, led, rgb, neon, hardware, motherboard, heatsink
