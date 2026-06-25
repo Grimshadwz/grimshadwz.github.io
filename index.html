@@ -365,48 +365,9 @@ nav a:hover {
 </style>
 <!--End Slide Show Frame-->
 
-    <script>
-    (function() {
-        // 1. The Invisible Cloak: Instantly exits the script if your secret badge is found
-        if (localStorage.getItem("ratchet_studio_cloak") === "true") {
-            console.log("Developer Cloak Active: Tracking disabled for this session.");
-            return; 
-        }
-
-        // 2. Logs Raw Inbound Page Views Natively
-        document.addEventListener("DOMContentLoaded", function() {
-            sendTelemetry("page_view", window.location.pathname);
-        });
-
-        // 3. Tracks Precise Conversion Click Activity Across Your Store Links
-        document.querySelectorAll("a").forEach(function(link) {
-            link.addEventListener("click", function() {
-                sendTelemetry("conversion_click", {
-                    target_url: this.href,
-                    button_label: this.innerText || "Header/Icon Link"
-                });
-            });
-        });
-
-        // 4. Central Telemetry Transmitter Function
-        function sendTelemetry(eventType, data) {
-            var payload = {
-                event: eventType,
-                timestamp: new Date().toISOString(),
-                path: data,
-                screen_size: window.innerWidth + "x" + window.innerHeight
-            };
-            
-            console.log("Live Analytics Transmission:", payload);
-            
-            // To collect these visual logs in a private dashboard later, 
-            // you can pipe them to a free analytics tool like goatcounter.com or an automated collector.
-        }
-    })();
-</script>
-
-
-    <script data-goatcounter="https://ratchetartstudio.goatcounter.com/count"
-        async src="//gc.zgo.at/count.js"></script>
+ <script data-goatcounter="https://ratchetartstudio.goatcounter.com/count"
+        async src="//gc.zgo.at/count.js">
+     
+        </script>
 </body>
 </html>
