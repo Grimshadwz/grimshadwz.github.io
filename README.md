@@ -48,7 +48,7 @@ File Format Information:
 Native File Format: Cinema 4D R25 (.C4D) — Includes fully configured, lightweight, zero-VRAM procedural Aluminum and Chrome PBR shaders. No heavy, memory-choking bitmap texture maps required.
 Universal Interchange Format: Self-contained Binary .FBX (2019 / 7.5 Universal Code) — Includes embedded media tags and pre-mapped material selection tags for immediate assignment inside Blender, Maya, 3ds Max, or Unreal Engine.
 * **Direct Shop Link**: [Premium Modular Wheel And Tire Pack](https://payhip.com/b/f3rIk)
-Keywords: wheels, tires, rims, truck, trailer, offroad, kitbash, c4d, fbx, lowpoly, highpoly, vfx, vehicle, custom, hardsurface, coddington, quads, topology, hotrod, automotive
+* Keywords: wheels, tires, rims, truck, trailer, offroad, kitbash, c4d, fbx, lowpoly, highpoly, vfx, vehicle, custom, hardsurface, coddington, quads, topology, hotrod, automotive
 
 ****************************************************************************************************************************************************************************************************************************
 
