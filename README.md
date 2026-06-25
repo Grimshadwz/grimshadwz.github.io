@@ -82,7 +82,7 @@ AVAILABLE FILE FORMATS:
 .FBX (Universal format preserving object pivot points and local rotation origins)
 
 Direct Shop Link: Modern Desktop CPU Cooler - Game Ready
-Keywords: cpu, cooler, fan, pc, computer, lowpoly, game-ready, electronics, prop, desk, gaming, setup, led, rgb, neon, hardware, motherboard, heatsink, shit
+Keywords: cpu, cooler, fan, pc, computer, lowpoly, game-ready, electronics, prop, desk, gaming, setup, led, rgb, neon, hardware, motherboard, heatsink
 
 
 **************************************************
