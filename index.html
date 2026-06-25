@@ -121,18 +121,40 @@
         </nav>
     </header>
 
-    <div class="custom-slider-container" style="background-color: #0d0d0d; padding: 40px 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; overflow: hidden; width: 100%;">
-    <div class="custom-slides-wrapper" style="display: flex; gap: 20px; padding: 0 20px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none;">
-        
-        <!-- Slide 1: Chevrolet S10 Truck Platform -->
-        <div class="custom-slide" style="flex: 0 0 85%; min-width: 280px; max-width: 600px; scroll-snap-align: center; background-color: #121212; border: 1px solid #1a1a1a; border-radius: 6px; padding: 20px; display: flex; flex-direction: column; gap: 15px;">
-            <img src="https://payhip.com/cdn-cgi/image/format=auto,width=1500/https://pe56d.s3.amazonaws.com/o_1jrk097k11sgfm1lq0d1uppj7kt.png" alt="Custom Chevrolet S10 3D Model Wireframe" style="width: 100%; border-radius: 4px; object-fit: cover; aspect-ratio: 16/9;">
-            <div>
-                <h3 style="color: #ffffff; font-size: 20px; margin-bottom: 6px;">Custom Chevrolet S10 Mini-Truck</h3>
-                <p style="color: #888888; font-size: 14px; line-height: 1.5; margin-bottom: 15px;">100% manual quad geometry chassis. Clean edge loops built natively for real-time engines and VFX pipelines.</p>
-                <a href="https://payhip.com/cdn-cgi/image/format=auto,width=1500/https://pe56d.s3.amazonaws.com/o_1jrk097k17omh0qsdb1ubplrtr.png" style="display: inline-block; background-color: #ffffff; color: #0d0d0d; text-decoration: none; padding: 12px 24px; font-weight: bold; border-radius: 4px; font-size: 14px;">View Vehicle Specs</a>
-            </div>
-        </div>
+    <!-- Slideshow container -->
+<div class="slideshow-container">
+
+  <!-- Full-width images with number and caption text -->
+  <div class="mySlides fade">
+    <div class="numbertext">1 / 3</div>
+    <img src="https://payhip.com/cdn-cgi/image/format=auto,width=1500/https://pe56d.s3.amazonaws.com/o_1jrk097k11sgfm1lq0d1uppj7kt.png" style="width:100%">
+    <div class="text">Caption Text</div>
+  </div>
+
+  <div class="mySlides fade">
+    <div class="numbertext">2 / 3</div>
+    <img src="https://payhip.com/cdn-cgi/image/format=auto,width=1500/https://pe56d.s3.amazonaws.com/o_1jrk097k17omh0qsdb1ubplrtr.png" style="width:100%">
+    <div class="text">Caption Two</div>
+  </div>
+
+  <div class="mySlides fade">
+    <div class="numbertext">3 / 3</div>
+    <img src="https://payhip.com/cdn-cgi/image/format=auto,width=1500/https://pe56d.s3.amazonaws.com/o_1jrk097k11059ia014o3126bd9ls.png" style="width:100%">
+    <div class="text">Caption Three</div>
+  </div>
+
+  <!-- Next and previous buttons -->
+  <a class="prev" onclick="plusSlides(-1)">&#10094;</a>
+  <a class="next" onclick="plusSlides(1)">&#10095;</a>
+</div>
+<br>
+
+<!-- The dots/circles -->
+<div style="text-align:center">
+  <span class="dot" onclick="currentSlide(1)"></span>
+  <span class="dot" onclick="currentSlide(2)"></span>
+  <span class="dot" onclick="currentSlide(3)"></span>
+</div>
 
         <!-- Slide 2: Premium Modular Wheel Pack -->
         <div class="custom-slide" style="flex: 0 0 85%; min-width: 280px; max-width: 600px; scroll-snap-align: center; background-color: #121212; border: 1px solid #1a1a1a; border-radius: 6px; padding: 20px; display: flex; flex-direction: column; gap: 15px;">
