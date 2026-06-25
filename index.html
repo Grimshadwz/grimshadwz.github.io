@@ -333,16 +333,26 @@ nav a:hover {
 
 /* 5. The Autoplay Fade Timeline */
 @keyframes universalCycle {
-  0% { opacity: 0; }
+  0% { 
+    opacity: 0; 
     visibility: hidden; /* Throws the invisible button link behind the page */
-  5% { opacity: 1; }
-    visibility: visible; /* Throws the invisible button link behind the page */
-  33% { opacity: 1; }
-    visibility: visible; /* Throws the invisible button link behind the page */
-  38% { opacity: 0; }
-    visibility: visible; /* Throws the invisible button link behind the page */
-  100% { opacity: 0; }
-    visibility: hidden; /* Throws the invisible button link behind the page */
+  }
+  5% { 
+    opacity: 1; 
+    visibility: visible; /* Brings the active slide and its correct link straight to the top */
+  }
+  33% { 
+    opacity: 1; 
+    visibility: visible; 
+  }
+  38% { 
+    opacity: 0; 
+    visibility: hidden; /* Drops the link the exact millisecond the image fades out */
+  }
+  100% { 
+    opacity: 0; 
+    visibility: hidden; 
+  }
 }
 
 /* Responsive Optimization for Screens Under 600px */
