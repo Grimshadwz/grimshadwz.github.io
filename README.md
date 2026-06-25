@@ -42,7 +42,7 @@ Keywords: wheels, tires, rims, truck, trailer, offroad, kitbash, c4d, fbx, lowpo
 **************************************************
 
 
-![Custom Chevrolet S10 Mini-Truck — BY RATCHET ART STUDIO](images/S10.png)
+![Custom Chevrolet S10 Mini-Truck — BY RATCHET ART STUDIO](grimshadwz.github.io/images/S10.png)
 
 Custom Chevrolet S10 Mini-Truck — BY RATCHET ART STUDIO High-quality, highly detailed 3D model of a custom slammed and bagged mini truck based on a late-90s/early-2000s Chevrolet S-10 platform. This model is perfect for automotive renderings, custom car culture scenes, digital diorama projects & a lot more (No Interior- Exterior Only)!
 
