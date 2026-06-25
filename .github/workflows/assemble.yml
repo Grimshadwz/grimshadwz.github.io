@@ -1,0 +1,32 @@
+name: Assemble Studio Catalog
+on:
+  push:
+    paths:
+      - 'products/**'   # Fires instantly when you add/edit a product file
+      - '01_header.md'
+      - '03_footer.md'
+jobs:
+  merge-markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stitch Markdown Segments Natively
+        run: |
+          # 1. Catches the header, stitches every file in the products folder with a break, and seals the footer
+          cat 01_header.md > README.md
+          echo -e "\n\n## 📦 Active Storefront Catalog\n\n" >> README.md
+          
+          for file in products/*.md; do
+            cat "$file" >> README.md
+            echo -e "\n\n**************************************************\n\n" >> README.md
+          done
+          
+          cat 03_footer.md >> README.md
+          
+      - name: Push Clean README Live
+        run: |
+          git config --global user.name "ratchet-studio-bot"
+          git config --global user.email "bot@ratchetartstudio.com"
+          git add README.md
+          git commit -m "Automated Assembly: Stitched production asset list" || exit 0
+          git push
