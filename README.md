@@ -65,7 +65,7 @@ Decal Accents: Includes custom window banners and windshield graphics (MiniTruck
 
 Optimized Topology: Clean polygonal structure suitable for close-up promotional renders and automotive visualizations.
 
-* **Direct Shop Link:** [Custom Chevrolet S10 Mini-Truck](https://payhip.com/b/KoN7R)
+* **Direct Shop Link**: [Custom Chevrolet S10 Mini-Truck](https://payhip.com/b/KoN7R)
 
 Keywords: concept, vehicle, chevrolet, s10, mini-truck, sema, bagged, airride, truck, custom, chevy, sdime, high-poly, cleanquads, quadmesh, production-ready, automotive-vfx, pre-smoothed, lsx
 
@@ -95,6 +95,6 @@ AVAILABLE FILE FORMATS:
 
 - .FBX (Universal format preserving object pivot points and local rotation origins)
   
-* **Direct Shop Link:** [Modern Desktop CPU Cooler - Game Ready](https://payhip.com/b/wxDVd)
+* **Direct Shop Link**: [Modern Desktop CPU Cooler - Game Ready](https://payhip.com/b/wxDVd)
 
 Keywords: cpu, cooler, fan, pc, computer, lowpoly, game-ready, electronics, prop, desk, gaming, setup, led, rgb, neon, hardware, motherboard, heatsink
