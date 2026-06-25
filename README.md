@@ -11,7 +11,7 @@ Welcome to the official repository grid for Ratchet Art Studio. This registry se
 ## 📦 Active Storefront Catalog
 
 
-![PREMIUM MODULAR VEHICLE WHEEL & TIRE PACK — BY RATCHET ART STUDIO](images/Wheels.png)
+![PREMIUM MODULAR VEHICLE WHEEL & TIRE PACK — BY RATCHET ART STUDIO](https://grimshadwz.github.io/images/Wheels.png)
 
 PREMIUM MODULAR VEHICLE WHEEL & TIRE PACK — BY RATCHET ART STUDIO
 
