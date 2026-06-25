@@ -1,4 +1,4 @@
-![Modern Desktop CPU Cooler Game Ready — BY RATCHET ART STUDIO](https://payhip.com/cdn-cgi/image/format=auto,width=1500/https://pe56d.s3.amazonaws.com/o_1jrn7co37hlq1ong12ph1fi31jud1h.jpg)
+![Modern Desktop CPU Cooler Game Ready — BY RATCHET ART STUDIO](https://grimshadwz.github.io/images/CPU.png)
 
 
 Modern Desktop CPU Cooler Game Ready — BY RATCHET ART STUDIO Premium, highly optimized game-ready 3D asset of a modern desktop CPU Air Cooler. Engineered specifically for real-time game engines, virtual environments, and prop clutter.
