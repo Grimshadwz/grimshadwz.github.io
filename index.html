@@ -3,32 +3,77 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ratchet Art Studio | Independent Hard-Surface 3D Assets</title>
+    <title>Ratchet Art Studio | Hard-Surface 3D Asset Foundry</title>
     <meta name="description" content="20-Year Native C4D hard-surface vehicle artist. Sourcing production-ready vehicle chassis components, quad-topology wheel packs, and optimized props.">
     <link rel="canonical" href="https://github.io" />
     <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
         body {
             background-color: #0d0d0d;
             color: #ffffff;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            margin: 0;
-            padding: 80px 20px;
-            text-align: center;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
         }
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
+        /* The Luxury Header Layout */
+        header {
+            width: 100%;
+            padding: 20px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #1a1a1a;
+            background-color: #0d0d0d;
+        }
+        .logo {
+            font-size: 18px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            text-decoration: none;
+            color: #ffffff;
+        }
+        nav {
+            display: flex;
+            gap: 30px;
+        }
+        nav a {
+            color: #888888;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            letter-spacing: 0.5px;
+            transition: color 0.2s;
+        }
+        nav a:hover {
+            color: #ffffff;
+        }
+        /* Main Hero Space */
+        .hero {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 40px 20px;
         }
         h1 {
-            font-size: 32px;
+            font-size: 42px;
             margin-bottom: 16px;
-            letter-spacing: 0.5px;
+            letter-spacing: -0.5px;
             font-weight: 700;
         }
         p {
-            color: #a0a0a0;
+            color: #888888;
             font-size: 16px;
             line-height: 1.6;
+            max-width: 500px;
             margin-bottom: 40px;
         }
         .btn {
@@ -39,20 +84,46 @@
             padding: 16px 36px;
             font-weight: bold;
             border-radius: 4px;
-            font-size: 16px;
+            font-size: 15px;
             letter-spacing: 0.5px;
             transition: background-color 0.2s;
         }
         .btn:hover {
             background-color: #e0e0e0;
         }
+        /* Mobile Optimization responsive rule */
+        @media (max-width: 600px) {
+            header {
+                flex-direction: column;
+                gap: 15px;
+                padding: 20px;
+            }
+            nav {
+                gap: 15px;
+            }
+            h1 {
+                font-size: 32px;
+            }
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Ratchet Art Studio</h1>
-        <p>20-Year Native C4D Hard-Surface Artist.<br>Production-Ready Vehicle Architecture & Component Kits.</p>
-        <a href="https://payhip.com/RatchetArtStudio" class="btn">3D Asset Shop</a>
+
+    <header>
+        <a href="https://payhip.com" class="logo">Ratchet Art Studio</a>
+        <nav>
+            <a href="https://payhip.com">Vehicles</a>
+            <a href="https://payhip.com">Component Kits</a>
+            <a href="https://payhip.com">Wireframes</a>
+            <a href="https://payhip.com">About</a>
+        </nav>
+    </header>
+
+    <div class="hero">
+        <h1>Independent 3D Asset Foundry</h1>
+        <p>20-Year Native C4D Hard-Surface Artist.<br>Engine-Ready Vehicular Architecture & Quad-Topology Component Kits.</p>
+        <a href="https://payhip.com" class="btn">Enter Studio Storefront</a>
     </div>
+
 </body>
 </html>
