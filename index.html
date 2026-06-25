@@ -121,27 +121,37 @@
         </nav>
     </header>
 
-<!--Pill Button-->
-    <button class="button">Pill Button</button>
-    <style>
-        
-        div {
-  width:300px;
-  margin:auto;
+<!-- The Button Container Wrapper -->
+<div class="button-wrapper">
+    <a href="https://payhip.com" class="pill-button">Enter Studio Storefront</a>
+</div>
+
+<style>
+/* 1. Centers the button container without forcing full width */
+.button-wrapper {
+    width: 100%;
+    text-align: center;
+    margin: 20px auto;
 }
-        .button {
-  background-color: #ddd;
-  border: none;
-  color: black;
-  padding: 10px 20px;
-  text-align: center;
-  text-decoration: none;
-  display: inline-block;
-  margin: 4px 2px;
-  cursor: pointer;
-  border-radius: 16px;
+
+/* 2. Controls the exact size and luxury shape of the button */
+.pill-button {
+    display: inline-block;
+    background-color: #252525;
+    color: #0d0d0d;
+    text-decoration: none;
+    padding: 14px 36px; /* Controls internal sizing spacing */
+    font-weight: bold;
+    font-size: 15px;
+    letter-spacing: 0.5px;
+    border-radius: 50px; /* Forces a true seamless pill shape */
+    transition: background-color 0.2s;
 }
-    </style>
+
+.pill-button:hover {
+    background-color: #e0e0e0;
+}
+</style>
 
 <!--Site Enter Button-->
     <div class="hero">
