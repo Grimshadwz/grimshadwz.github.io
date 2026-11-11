@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("CrudeOilVehicles", "Custom", "1.1.0")]
+    [Info("CrudeOilVehicles", "Paradox Studios", "1.1.0")]
     [Description("Converts vehicle fuel tanks to run on Crude Oil with a custom burn rate multiplier.")]
     public class CrudeOilVehicles : RustPlugin
     {
