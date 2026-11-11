@@ -3,15 +3,21 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("CrudeOilVehicles", "Paradox Studios", "1.0.1")]
-    [Description("Converts vehicle fuel tanks to run on Crude Oil instead of Low Grade Fuel.")]
+    [Info("CrudeOilVehicles", "Custom", "1.1.0")]
+    [Description("Converts vehicle fuel tanks to run on Crude Oil with a custom burn rate multiplier.")]
     public class CrudeOilVehicles : RustPlugin
     {
         private const string CrudeOilShortname = "crude.oil";
         private ItemDefinition _crudeOilDef;
 
-        // Toggle this to true if you also want to stop players from refining Crude Oil into Low Grade
+        // 1.0f = Vanilla | 1.5f = 50% faster burn | 0.5f = 50% slower burn
+        private const float FuelBurnMultiplier = 0.5f; 
+
+        // Toggle true to block refining Crude Oil into Low Grade Fuel
         private const bool BlockRefiningCrudeOil = false;
+
+        // Tracks fractional fuel usage per vehicle so multipliers like 1.5x or 0.5x work smoothly
+        private readonly Dictionary<NetworkableId, float> _pendingFuelDebt = new Dictionary<NetworkableId, float>();
 
         private void OnServerInitialized()
         {
@@ -22,7 +28,6 @@ namespace Oxide.Plugins
                 return;
             }
 
-            // Convert all vehicles currently spawned on the map
             int updatedCount = 0;
             foreach (var entity in BaseNetworkable.serverEntities)
             {
@@ -32,7 +37,7 @@ namespace Oxide.Plugins
                 }
             }
 
-            Puts($"Converted {updatedCount} existing vehicles to run on Crude Oil.");
+            Puts($"Converted {updatedCount} existing vehicles to Crude Oil (Burn Multiplier: {FuelBurnMultiplier}x).");
         }
 
         private void OnEntitySpawned(BaseVehicle vehicle)
@@ -40,7 +45,6 @@ namespace Oxide.Plugins
             if (vehicle == null || _crudeOilDef == null)
                 return;
 
-            // Delay by 1 tick so the vehicle's fuel system finishes initializing
             NextTick(() =>
             {
                 if (vehicle != null && !vehicle.IsDestroyed)
@@ -48,6 +52,14 @@ namespace Oxide.Plugins
                     ConvertVehicleFuel(vehicle);
                 }
             });
+        }
+
+        private void OnEntityKill(BaseVehicle vehicle)
+        {
+            if (vehicle != null && vehicle.net != null)
+            {
+                _pendingFuelDebt.Remove(vehicle.net.ID);
+            }
         }
 
         private bool ConvertVehicleFuel(BaseVehicle vehicle)
@@ -60,14 +72,44 @@ namespace Oxide.Plugins
             if (fuelContainer == null || fuelContainer.inventory == null)
                 return false;
 
-            // Set the fuel tank inventory to only accept Crude Oil
             fuelContainer.inventory.onlyAllowedItems = new ItemDefinition[] { _crudeOilDef };
             fuelContainer.allowedItem = _crudeOilDef;
 
             return true;
         }
 
-        // Optional: Prevents Small Oil Refineries from turning Crude Oil into Low Grade Fuel
+        // Intercepts fuel consumption every tick
+        private object OnFuelConsume(EntityFuelSystem fuelSystem, Item fuel, float amount)
+        {
+            if (fuelSystem == null || fuel == null || fuel.info.shortname != CrudeOilShortname)
+                return null;
+
+            // Let vanilla handle it if multiplier is 1.0
+            if (Mathf.Approximately(FuelBurnMultiplier, 1.0f))
+                return null;
+
+            var container = fuelSystem.GetFuelContainer();
+            if (container == null || container.net == null)
+                return null;
+
+            NetworkableId id = container.net.ID;
+            if (!_pendingFuelDebt.ContainsKey(id))
+                _pendingFuelDebt[id] = 0f;
+
+            // Accumulate scaled fuel usage
+            _pendingFuelDebt[id] += amount * FuelBurnMultiplier;
+
+            int wholeUnitsToConsume = Mathf.FloorToInt(_pendingFuelDebt[id]);
+            if (wholeUnitsToConsume > 0)
+            {
+                _pendingFuelDebt[id] -= wholeUnitsToConsume;
+                fuel.UseItem(wholeUnitsToConsume);
+            }
+
+            // Returning false cancels vanilla fuel subtraction so our custom math takes over
+            return false;
+        }
+
         private object CanAcceptItem(ItemContainer container, Item item, int targetPos)
         {
             if (!BlockRefiningCrudeOil || container == null || item == null)
