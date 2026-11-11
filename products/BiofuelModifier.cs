@@ -4,100 +4,84 @@ using System.Collections.Generic;
 
 namespace Oxide.Plugins
 {
-    [Info("Biofuel Modifier", "Paradox Studios", "2.1.1")]
-    [Description("Bypasses native timers to instantly process all food inside Biofuel Generators at 3x output.")]
+    [Info("Biofuel Modifier", "Grimshadwz", "2.2.1")]
+    [Description("Instantly converts items added to Biofuel Generators into 3x Low Grade Fuel.")]
     class BiofuelModifier : RustPlugin
     {
-        private Configuration config;
+        private const int YieldMultiplier = 3;
 
-        class Configuration
+        // Custom mapping to provide exact vanilla numbers multiplied by 3
+        private readonly Dictionary<string, int> customYields = new Dictionary<string, int>
         {
-            public int YieldMultiplier = 40; // The low grade yield
-        }
+            { "potato", 20 }, // Raw Potato
+            { "fish.cooked", 12 }, // Cooked Fish
+            { "pumpkin", 20 }, // Raw Pumpkin
+            { "beefmeat.cooked", 30 }, // Cooked Beef Meat
+            { "beefmeat", 30 }, // Raw Beef Meat
+            { "bigcatmeat.cooked", 30 }, // Cooked Big Cat Meat
+            { "bigcatmeat", 30 }, // Raw Big Cat Meat
+            { "crocodilemeat.cooked", 30 }, // Cooked Crocodile Meat
+            { "crocodilemeat", 30 }, // Raw Crocodile Meat
+            { "meat.boar", 15 }, // Raw Boar Meat
+            { "bearmeat.cooked", 30 }, // Cooked Bear Meat
+            { "bearmeat", 30 }, // Raw Bear Meat
+            { "fish.raw", 10 }, // Raw Fish
+            { "corn", 15 }, // Corn
+            { "apple", 12 }, // Apple
+            { "meat.pork.cooked", 15 }, // Cooked Pork Meat
+            { "horsemeat.cooked", 15 }, // Cooked Horse Meat
+            { "horsemeat.raw", 15 }, // Raw Horse Meat
+            { "muttonmeat.cooked", 20 }, // Cooked Mutton Meat
+            { "muttonmeat.raw", 20 }, // Raw Mutton Meat
+            { "wolfmeat.cooked", 25 }, // Cooked Wolf Meat
+            { "wolfmeat.raw", 25 }, // Raw Wolf Meat
+            { "deermeat.cooked", 30 }, // Cooked Deer Meat
+            { "deermeat.raw", 30 }, // Raw Deer Meat
+            { "rabbitmeat.cooked", 12 }, // Cooked Rabbit Meat
+            { "rabbitmeat.raw", 12 }, // Raw Rabbit Meat
+            { "chickenmeat.cooked", 12 }, // Cooked Chicken Meat
+            { "chickenmeat.raw", 12 } // Raw Chicken Meat
+        };
 
-        protected override void LoadConfig()
+        private void OnItemAddedToContainer(ItemContainer container, Item item)
         {
-            base.LoadConfig();
-            try
+            if (container == null || item == null) return;
+
+            BaseEntity owner = container.entityOwner;
+            if (owner == null || !owner.ShortPrefabName.Contains("biofuel")) return;
+
+            if (item.info.shortname == "lowgradefuel") return;
+            if (item.info.GetComponent<ItemModConsume>() == null) return;
+
+            // Step 1: Capture the exact item metrics we need before destroying it
+            string shortname = item.info.shortname;
+            int itemAmount = item.amount;
+            Vector3 dropPosition = owner.transform.position;
+
+            // Step 2: Instantly wipe out the food stack so the vanilla engine cannot process it
+            item.Remove();
+
+            // Step 3: Run on the next frame to guarantee the custom reward completely overwrites vanilla logic
+            NextFrame(() =>
             {
-                config = Config.ReadObject<Configuration>();
-                if (config == null) LoadDefaultConfig();
-            }
-            catch
-            {
-                LoadDefaultConfig();
-            }
-            SaveConfig();
-        }
+                if (container == null || owner == null || owner.IsDestroyed) return;
 
-        protected override void LoadDefaultConfig()
-        {
-            config = new Configuration();
-        }
+                int baseYield = customYields.ContainsKey(shortname) ? customYields[shortname] : 1;
+                int finalAmount = (baseYield * itemAmount) * YieldMultiplier;
 
-        private float tickTimer = 0f;
-
-        // Ticks every server frame; throttled to check once every second for optimal performance
-        private void OnServerTick()
-        {
-            tickTimer += Time.deltaTime;
-            if (tickTimer < 1.0f) return; 
-            tickTimer = 0f;
-
-            // Find every Biofuel Generator active on the map
-            var generators = UnityEngine.Object.FindObjectsOfType<BiofuelGenerator>();
-            if (generators == null) return;
-
-            foreach (var generator in generators)
-            {
-                if (generator == null || generator.IsDestroyed || generator.inventory == null) continue;
-
-                // Check if the generator is turned ON using the standard active flag
-                if (!generator.HasFlag(BaseEntity.Flags.On)) continue;
-
-                bool processedAny = false;
-                List<Item> currentItems = new List<Item>(generator.inventory.itemList);
-
-                foreach (var item in currentItems)
+                // Create and insert the true 3x low grade fuel reward
+                Item fuelReward = ItemManager.CreateByItemID(ItemManager.FindItemDefinition("lowgradefuel").itemid, finalAmount);
+                if (fuelReward != null)
                 {
-                    if (item == null || item.info.shortname == "lowgradefuel") continue;
-
-                    // Verify the item is edible / organic
-                    var consumeComponent = item.info.GetComponent<ItemModConsume>();
-                    if (consumeComponent == null) continue;
-
-                    // Base game fuel calculations (Pumpkins = 2, Potatoes = 3, Corn = 1)
-                    int baseYield = 1;
-                    string name = item.info.shortname;
-
-                    if (name == "potato" || name == "fish.cooked") baseYield = 3;
-                    else if (name == "pumpkin" || (name.Contains("meat") && name.Contains("cooked"))) baseYield = 20;
-
-                    // Compute our modified 3x yield for the stack size
-                    int finalAmount = (baseYield * item.amount) * config.YieldMultiplier;
-
-                    // Instantly vaporize the food stack
-                    item.Remove();
-                    processedAny = true;
-
-                    // Spawn the tripled low-grade fuel directly into the container slots
-                    Item fuelOutput = ItemManager.CreateByItemID(ItemManager.FindItemDefinition("lowgradefuel").itemid, finalAmount);
-                    if (fuelOutput != null)
+                    if (!fuelReward.MoveToContainer(container))
                     {
-                        if (!fuelOutput.MoveToContainer(generator.inventory))
-                        {
-                            fuelOutput.Drop(generator.transform.position, Vector3.down);
-                        }
+                        fuelReward.Drop(dropPosition, Vector3.down);
                     }
                 }
 
-                if (processedAny)
-                {
-                    // Force the container UI and client network to visually update instantly
-                    generator.inventory.MarkDirty();
-                    generator.SendNetworkUpdate();
-                }
-            }
+                container.MarkDirty();
+                owner.SendNetworkUpdate();
+            });
         }
     }
 }
