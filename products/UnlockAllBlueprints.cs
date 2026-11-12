@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Unlock All Blueprints & Auto Workbench Range", "YourName", "3.4.0")]
+    [Info("Unlock All Blueprints & Auto Workbench Range", "Paradox Studios", "1.0.4")]
     [Description("Unlocks all blueprints without fragments/pages/books and equips the native Range Workbench Upgrade on all workbenches.")]
     public class UnlockAllBlueprints : RustPlugin
     {
