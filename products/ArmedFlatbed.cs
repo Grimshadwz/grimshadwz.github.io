@@ -146,6 +146,41 @@ namespace Oxide.Plugins
             }
         }
         private Timer _turretAiTimer;
+//Refresh Truck Generators (to keep them powered)
+        private void RefreshTruckGenerators()
+        {
+            foreach (var car in BaseNetworkable.serverEntities.OfType<ModularCar>())
+            {
+                if (car == null || car.IsDestroyed || !IsArmedFlatbed(car)) continue;
+
+                foreach (var gen in car.GetComponentsInChildren<ElectricGenerator>(true))
+                {
+                    if (gen == null || gen.IsDestroyed) continue;
+
+                    var parentIo = gen.GetParentEntity() as IOEntity;
+                    if (parentIo == null || parentIo.IsDestroyed) continue;
+
+                    // Keep generator powered unless the user explicitly turned that device OFF in /truckui
+                    if (parentIo is AutoTurret)
+                    {
+                        var sw = car.children.OfType<ElectricSwitch>().FirstOrDefault();
+                        if (sw != null && !sw.IsOn()) continue;
+                    }
+                    else if (!parentIo.HasFlag(BaseEntity.Flags.On))
+                    {
+                        continue;
+                    }
+
+                    if (gen.electricAmount < 100f || gen.GetCurrentEnergy() <= 0)
+                    {
+                        gen.electricAmount = 100f;
+                        gen.ForcePuzzleReset();
+                        gen.MarkDirtyForceUpdateOutputs();
+                    }
+                }
+            }
+        }
+
 
         private void OnServerInitialized()
         {
@@ -161,11 +196,13 @@ namespace Oxide.Plugins
 
             _workbenchCheckTimer = timer.Every(1.0f, UpdateVirtualWorkbenchAura);
             _turretAiTimer = timer.Every(0.5f, UpdateTruckTurretNpcTargets);
+            timer.Every(30f, RefreshTruckGenerators);
 
 
             
         }
       
+        private Timer _generatorRefreshTimer;
 
         private void OnServerSave()
         {
@@ -393,6 +430,7 @@ namespace Oxide.Plugins
             _t3WorkbenchActiveCars.Clear();
             _playersWithTruckT3.Clear();
             _turretAiTimer?.Destroy();
+            _generatorRefreshTimer?.Destroy();
 
         }
 
