@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("HeavyArmedZombies", "1320 Veteran", "1.7.0")]
+    [Info("HeavyArmedZombies", "Paradox Studios", "1.7.0")]
     [Description("Spawns defending zombies strictly locked inside roadside radtown_1.prefab with automatic JSON configuration in oxide/config/HeavyArmedZombies.json.")]
     public class HeavyArmedZombies : RustPlugin
     {
