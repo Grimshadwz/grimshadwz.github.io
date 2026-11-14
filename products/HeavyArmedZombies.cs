@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("HeavyArmedZombies", "Paradox Studios", "1.7.0")]
+    [Info("HeavyArmedZombies", "1320 Veteran", "1.7.0")]
     [Description("Spawns defending zombies strictly locked inside roadside radtown_1.prefab with automatic JSON configuration in oxide/config/HeavyArmedZombies.json.")]
     public class HeavyArmedZombies : RustPlugin
     {
@@ -27,16 +27,17 @@ namespace Oxide.Plugins
             [JsonProperty("3. Weapons Per Role (Shortnames)")]
             public RoleWeapons Weapons { get; set; } = new RoleWeapons();
 
-            [JsonProperty("4. Clothing & Armor (Shortnames)")]
-            public List<string> ClothingAndArmor { get; set; } = new List<string>
+            [JsonProperty("4. Clothing & Armor (Shortname & Workshop Skin ID)")]
+            public List<ClothingEntry> ClothingAndArmor { get; set; } = new List<ClothingEntry>
             {
-                "scarecrowhead",
-                "burlap.shirt",
-                "burlap.trousers",
-                "metal.plate.torso",
-                "roadsign.kilt",
-                "shoes.boots"
+                new ClothingEntry("metal.facemask", 3803089246),
+                new ClothingEntry("hoodie", 3816954119),
+                new ClothingEntry("pants", 3816954201),
+                new ClothingEntry("metal.plate.torso", 3820010667),
+                new ClothingEntry("roadsign.kilt", 3816954286),
+                new ClothingEntry("shoes.boots", 0)
             };
+
 
             [JsonProperty("5. General Loot Table (Dropped by all zombies)")]
             public List<LootEntry> GeneralLootTable { get; set; } = new List<LootEntry>
@@ -163,6 +164,24 @@ namespace Oxide.Plugins
                 DropChance = dropChance;
             }
         }
+
+        private class ClothingEntry
+        {
+            [JsonProperty("Clothing Shortname")]
+            public string Shortname { get; set; }
+
+            [JsonProperty("Workshop Skin ID (0 for none)")]
+            public ulong SkinID { get; set; }
+
+            public ClothingEntry() { }
+
+            public ClothingEntry(string shortname, ulong skinId)
+            {
+                Shortname = shortname;
+                SkinID = skinId;
+            }
+        }
+
 
         protected override void LoadDefaultConfig()
         {
@@ -451,14 +470,16 @@ namespace Oxide.Plugins
 
             if (_config.ClothingAndArmor != null)
             {
-                foreach (string clothingShortname in _config.ClothingAndArmor)
+                foreach (var clothing in _config.ClothingAndArmor)
                 {
-                    if (!string.IsNullOrEmpty(clothingShortname))
+                    if (clothing != null && !string.IsNullOrEmpty(clothing.Shortname))
                     {
-                        ItemManager.CreateByName(clothingShortname, 1, 0)?.MoveToContainer(npc.inventory.containerWear);
+                        ItemManager.CreateByName(clothing.Shortname, 1, clothing.SkinID)?.MoveToContainer(npc.inventory.containerWear);
+
                     }
                 }
             }
+
 
             string weaponShortname = _config.Weapons.AK;
             switch (role)
