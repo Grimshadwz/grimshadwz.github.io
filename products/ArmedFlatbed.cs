@@ -81,7 +81,8 @@ namespace Oxide.Plugins
 
         private const string BoxPrefab = "assets/prefabs/deployable/large wood storage/box.wooden.large.prefab";
         private const string TurretPrefab = "assets/prefabs/npc/autoturret/autoturret_deployed.prefab";
-        private const string GeneratorPrefab = "assets/prefabs/io/electric/generators/generator.static_hidden.prefab";
+        private const string GeneratorPrefab = "assets/prefabs/deployable/playerioents/generators/generator.small.prefab";
+
         private const string SwitchPrefab = "assets/prefabs/deployable/playerioents/simpleswitch/switch.prefab";
         private const string RecyclerPrefab = "assets/bundled/prefabs/static/recycler_static.prefab";
         private const string Workbench3Prefab = "assets/prefabs/deployable/tier 3 workbench/workbench3.deployed.prefab";
@@ -146,41 +147,80 @@ namespace Oxide.Plugins
             }
         }
         private Timer _turretAiTimer;
-//Refresh Truck Generators (to keep them powered)
-        private void RefreshTruckGenerators()
+
+
+        private Timer _powerRefreshTimer;
+
+    private void SetTruckDevicePower(IOEntity device, bool turnOn)
+    {
+        if (device == null || device.IsDestroyed) return;
+
+        bool hasInput = device.inputs != null && device.inputs.Length > 0;
+
+    if (device is AutoTurret turret)
+    {
+        if (turnOn)
         {
-            foreach (var car in BaseNetworkable.serverEntities.OfType<ModularCar>())
+            turret.flags |= BaseEntity.Flags.Reserved8;
+            if (hasInput) turret.UpdateFromInput(100, 0);
+            if (!turret.IsOnline()) turret.InitiateStartup();
+        }
+        else
+        {
+            turret.flags &= ~BaseEntity.Flags.Reserved8;
+            if (hasInput) turret.UpdateFromInput(0, 0);
+            if (turret.IsOnline()) turret.SetIsOnline(false);
+        }
+        turret.SendNetworkUpdateImmediate();
+        return;
+    }
+
+    if (turnOn)
+    {
+        device.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
+        if (hasInput) device.UpdateFromInput(100, 0);
+    }
+    else
+    {
+        device.flags &= ~(BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
+        if (hasInput) device.UpdateFromInput(0, 0);
+    }
+    device.SendNetworkUpdateImmediate();
+}
+
+
+private void RefreshTruckPower()
+{
+    foreach (var car in BaseNetworkable.serverEntities.OfType<ModularCar>())
+    {
+        if (car == null || car.IsDestroyed || !IsArmedFlatbed(car)) continue;
+
+        // Clean up any leftover visible generators from earlier builds
+        foreach (var oldGen in car.GetComponentsInChildren<ElectricGenerator>(true).ToList())
+        {
+            if (oldGen != null && !oldGen.IsDestroyed) oldGen.Kill();
+        }
+
+        // Keep lights, siren, and fridge powered if their ON flag is set
+        foreach (var ioEnt in car.children.OfType<IOEntity>())
+        {
+            if (ioEnt == null || ioEnt.IsDestroyed || ioEnt is ElectricSwitch || ioEnt is AutoTurret) continue;
+            if (ioEnt.HasFlag(BaseEntity.Flags.On))
             {
-                if (car == null || car.IsDestroyed || !IsArmedFlatbed(car)) continue;
-
-                foreach (var gen in car.GetComponentsInChildren<ElectricGenerator>(true))
-                {
-                    if (gen == null || gen.IsDestroyed) continue;
-
-                    var parentIo = gen.GetParentEntity() as IOEntity;
-                    if (parentIo == null || parentIo.IsDestroyed) continue;
-
-                    // Keep generator powered unless the user explicitly turned that device OFF in /truckui
-                    if (parentIo is AutoTurret)
-                    {
-                        var sw = car.children.OfType<ElectricSwitch>().FirstOrDefault();
-                        if (sw != null && !sw.IsOn()) continue;
-                    }
-                    else if (!parentIo.HasFlag(BaseEntity.Flags.On))
-                    {
-                        continue;
-                    }
-
-                    if (gen.electricAmount < 100f || gen.GetCurrentEnergy() <= 0)
-                    {
-                        gen.electricAmount = 100f;
-                        gen.ForcePuzzleReset();
-                        gen.MarkDirtyForceUpdateOutputs();
-                    }
-                }
+                SetTruckDevicePower(ioEnt, true);
             }
         }
 
+        // Keep turret powered if its switch is ON (and leave it OFF if switch is OFF for reloading)
+        var turret = car.children.OfType<AutoTurret>().FirstOrDefault();
+        if (turret != null && !turret.IsDestroyed)
+        {
+            var sw = car.children.OfType<ElectricSwitch>().FirstOrDefault();
+            bool shouldBeOn = sw != null ? sw.IsOn() : turret.IsOnline();
+            SetTruckDevicePower(turret, shouldBeOn);
+        }
+    }
+}
 
         private void OnServerInitialized()
         {
@@ -191,18 +231,21 @@ namespace Oxide.Plugins
                     if (car == null || car.IsDestroyed || !car.IsFullySpawned() || !IsArmedFlatbed(car)) continue;
 
                     RestoreArmedFlatbedAfterRestart(car);
+                    BoostTruckEnginePower(car);
+
                 }
             });
 
             _workbenchCheckTimer = timer.Every(1.0f, UpdateVirtualWorkbenchAura);
             _turretAiTimer = timer.Every(0.5f, UpdateTruckTurretNpcTargets);
-            timer.Every(30f, RefreshTruckGenerators);
+            _powerRefreshTimer = timer.Every(15f, RefreshTruckPower);
+            
 
 
             
         }
       
-        private Timer _generatorRefreshTimer;
+        
 
         private void OnServerSave()
         {
@@ -272,7 +315,6 @@ namespace Oxide.Plugins
                     {
                         StripPhysicsAndStability(gen);
                         gen.electricAmount = 100f;
-                        gen.ForcePuzzleReset();
                         gen.MarkDirtyForceUpdateOutputs();
                     }
 
@@ -430,7 +472,8 @@ namespace Oxide.Plugins
             _t3WorkbenchActiveCars.Clear();
             _playersWithTruckT3.Clear();
             _turretAiTimer?.Destroy();
-            _generatorRefreshTimer?.Destroy();
+            _powerRefreshTimer?.Destroy();
+           
 
         }
 
@@ -753,20 +796,98 @@ namespace Oxide.Plugins
             }
             return null;
         }
-
+// 11/14/2026 - Updated this to completely remove decay issues with the custom flatbed as well as the vehicle it's self.
         private object OnEntityTakeDamage(BaseCombatEntity entity, HitInfo info)
+{
+    if (entity == null || info == null) return null;
+
+    var car = entity as ModularCar ?? entity.GetComponentInParent<ModularCar>();
+    if (car != null && IsArmedFlatbed(car))
+    {
+        // Cancel all damage and decay on the car, its modules, and all flatbed items
+        info.damageTypes.Clear();
+        return true;
+    }
+
+    return null;
+}
+// 11/14/2026 - Updated this to add full health restoration for the truck, its modules, and all attached items.
+    private void RestoreTruckFullHealth(ModularCar car)
+{
+    if (car == null || car.IsDestroyed) return;
+
+    car.SetHealth(car.MaxHealth());
+
+    foreach (var mod in car.AttachedModuleEntities)
+    {
+        if (mod != null && !mod.IsDestroyed)
+            mod.SetHealth(mod.MaxHealth());
+    }
+
+    foreach (var child in car.GetComponentsInChildren<BaseCombatEntity>(true))
+    {
+        if (child != null && !child.IsDestroyed)
+            child.SetHealth(child.MaxHealth());
+    }
+}
+
+    private void OnEngineLoadoutChanged(VehicleModuleEngine engineMod)
+{
+    if (engineMod == null || engineMod.IsDestroyed) return;
+    var car = engineMod.GetComponentInParent<ModularCar>();
+    if (car != null && IsArmedFlatbed(car))
+    {
+        NextTick(() => BoostTruckEnginePower(car));
+    }
+}
+
+
+// 11/14/2026 - Updated this to add more power to the engine so that the truck can climb rough terrain better / easier.
+    private void BoostTruckEnginePower(ModularCar car, float multiplier = 2.0f)
+{
+    if (car == null || car.IsDestroyed || !IsArmedFlatbed(car)) return;
+
+    foreach (var module in car.AttachedModuleEntities)
+    {
+        var engineMod = module as VehicleModuleEngine;
+        if (engineMod == null || engineMod.IsDestroyed || engineMod.engine == null) continue;
+
+        if (engineMod.engine.engineKW > 0 && engineMod.engine.engineKW < 120)
         {
-            if (entity == null || info == null) return null;
-            if (info.damageTypes.Has(Rust.DamageType.Decay))
-            {
-                var car = entity as ModularCar ?? entity.GetComponentInParent<ModularCar>();
-                if (car != null && IsArmedFlatbed(car))
-                {
-                    return true;
-                }
-            }
-            return null;
+            engineMod.engine.engineKW = Mathf.RoundToInt(engineMod.engine.engineKW * multiplier);
+            engineMod.SendNetworkUpdateImmediate();
         }
+    }
+}
+
+private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.EngineStorage engineStorage)
+{
+    if (engineMod == null || engineMod.IsDestroyed) return;
+
+    var car = engineMod.GetComponentInParent<ModularCar>();
+    if (car != null && IsArmedFlatbed(car))
+    {
+        BoostTruckEnginePower(car);
+    }
+}
+
+
+
+// 11/14/2026 - Updated this to add full constat power to the turret from the truck. Switch will turn the turret on/off and keep it fully powered when on.
+    private void OnSwitchToggle(ElectricSwitch electricSwitch, BasePlayer player)
+    {
+        if (electricSwitch == null || electricSwitch.IsDestroyed) return;
+        var car = electricSwitch.GetComponentInParent<ModularCar>();
+        if (car == null || !IsArmedFlatbed(car)) return;
+
+    NextTick(() =>
+    {
+        if (electricSwitch == null || electricSwitch.IsDestroyed || car == null || car.IsDestroyed) return;
+        var turret = car.children.OfType<AutoTurret>().FirstOrDefault();
+        if (turret != null) SetTruckDevicePower(turret, electricSwitch.IsOn());
+        CaptureFlatbedState(car);
+    });
+}
 
         private bool IsArmedFlatbed(ModularCar car)
         {
@@ -892,31 +1013,10 @@ namespace Oxide.Plugins
             purifier.SendNetworkUpdateImmediate();
         }
 
-        private void PowerUpIoDevice(IOEntity ioEnt, bool turnOn)
+         private void PowerUpIoDevice(IOEntity ioEnt, bool turnOn)
         {
-            if (ioEnt == null || ioEnt.IsDestroyed) return;
-            var gen = ioEnt.GetComponentInChildren<ElectricGenerator>();
-            if (turnOn)
-            {
-                ioEnt.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-                if (gen != null)
-                {
-                    gen.electricAmount = 100f;
-                    gen.ForcePuzzleReset();
-                    gen.MarkDirtyForceUpdateOutputs();
-                }
-            }
-            else
-            {
-                ioEnt.flags &= ~(BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-                if (gen != null)
-                {
-                    gen.electricAmount = 0f;
-                    gen.MarkDirtyForceUpdateOutputs();
-                }
-            }
-            ioEnt.SendNetworkUpdateImmediate();
-        }
+            SetTruckDevicePower(ioEnt, turnOn);
+        }      
 
         [ChatCommand("removebed")]
         private void CmdRemoveBed(BasePlayer player, string command, string[] args)
@@ -1014,6 +1114,7 @@ namespace Oxide.Plugins
 
             GetOrRestoreFuelContainer(car);
             Build3SlotFlatbed(car, player);
+            BoostTruckEnginePower(car);
 
             uint carId = (uint)car.net.ID.Value;
             _t3WorkbenchActiveCars.Add(carId);
@@ -1144,48 +1245,25 @@ namespace Oxide.Plugins
                     break;
 
                 case "fridge":
-                    var fridge = car.children.FirstOrDefault(c => c != null && c.ShortPrefabName.Contains("fridge"));
-                    if (fridge != null)
-                    {
-                        bool fridgeOn = fridge.HasFlag(BaseEntity.Flags.On);
-                        var fridgeGen = fridge.GetComponentInChildren<ElectricGenerator>();
-                        if (fridgeOn)
-                        {
-                            fridge.flags &= ~(BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-                            if (fridgeGen != null) fridgeGen.electricAmount = 0f;
-                        }
-                        else
-                        {
-                            fridge.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-                            if (fridgeGen != null)
-                            {
-                                fridgeGen.electricAmount = 100f;
-                                fridgeGen.ForcePuzzleReset();
-                                fridgeGen.MarkDirtyForceUpdateOutputs();
-                            }
-                        }
-                        fridge.SendNetworkUpdateImmediate();
-                    }
+                    var fridge = car.children.OfType<IOEntity>().FirstOrDefault(c => c != null && c.ShortPrefabName.Contains("fridge"));
+                    if (fridge != null) SetTruckDevicePower(fridge, !fridge.HasFlag(BaseEntity.Flags.On));
                     CaptureFlatbedState(car);
                     break;
 
                 case "turret":
                     var electricSwitch = car.children.OfType<ElectricSwitch>().FirstOrDefault();
                     var turret = car.children.OfType<AutoTurret>().FirstOrDefault();
+                    bool turnOn = electricSwitch != null ? !electricSwitch.IsOn() : (turret != null && !turret.IsOnline());
                     if (electricSwitch != null)
                     {
-                        electricSwitch.SetSwitch(!electricSwitch.IsOn());
-                        electricSwitch.MarkDirtyForceUpdateOutputs();
-                        electricSwitch.SendNetworkUpdateImmediate();
+                    electricSwitch.SetSwitch(turnOn);
+                    electricSwitch.SendNetworkUpdateImmediate();
                     }
-                    else if (turret != null)
-                    {
-                        if (turret.IsOnline()) turret.SetIsOnline(false);
-                        else turret.InitiateStartup();
-                        turret.SendNetworkUpdateImmediate();
-                    }
+                    if (turret != null) SetTruckDevicePower(turret, turnOn);
                     CaptureFlatbedState(car);
                     break;
+
+
             }
 
             ShowTruckUi(player, car);
@@ -1389,37 +1467,11 @@ namespace Oxide.Plugins
                     fridge.transform.localPosition = MiniFridgeLocalPos;
                     fridge.transform.localRotation = Quaternion.Euler(MiniFridgeLocalRot);
 
-                    var fridgeIo = fridge as IOEntity;
-                    if (fridgeIo != null && fridgeIo.inputs != null && fridgeIo.inputs.Length > 0)
-                    {
-                        timer.Once(0.2f, () =>
-                        {
-                            if (fridgeIo == null || fridgeIo.IsDestroyed) return;
-                            var fridgeGen = GameManager.server.CreateEntity(GeneratorPrefab, fridgeIo.transform.position, fridgeIo.transform.rotation) as ElectricGenerator;
-                            if (fridgeGen != null)
-                            {
-                                StripPhysicsAndStability(fridgeGen);
-                                fridgeGen.electricAmount = 100f;
-                                fridgeGen.Spawn();
-                                fridgeGen.SetParent(fridgeIo, worldPositionStays: false);
-                                fridgeGen.transform.localPosition = new Vector3(0f, -0.1f, 0f);
-
-                                fridgeGen.outputs.First().connectedTo.Set(fridgeIo);
-                                fridgeGen.outputs.First().connectedToSlot = 0;
-                                fridgeIo.inputs.First().connectedTo.Set(fridgeGen);
-                                fridgeIo.inputs.First().connectedToSlot = 0;
-
-                                fridgeGen.ForcePuzzleReset();
-                                fridgeGen.MarkDirtyForceUpdateOutputs();
-                            }
-                            fridgeIo.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-                            fridgeIo.SendNetworkUpdateImmediate();
-                        });
-                    }
-                    else
-                    {
-                        fridge.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-                    }
+                if (fridge is IOEntity fridgeIo)
+                    timer.Once(0.2f, () => SetTruckDevicePower(fridgeIo, true));
+                else
+                    fridge.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
+   
 
                     fridge.SendNetworkUpdateImmediate();
                 }
@@ -1498,32 +1550,7 @@ namespace Oxide.Plugins
                     beacon.transform.localPosition = BeaconLocalPos;
                     beacon.transform.localRotation = Quaternion.Euler(BeaconLocalRot);
 
-                    timer.Once(0.2f, () =>
-                    {
-                        if (beacon == null || beacon.IsDestroyed) return;
-                        var beaconGen = GameManager.server.CreateEntity(GeneratorPrefab, beacon.transform.position, beacon.transform.rotation) as ElectricGenerator;
-                        if (beaconGen != null)
-                        {
-                            StripPhysicsAndStability(beaconGen);
-                            beaconGen.electricAmount = 100f;
-                            beaconGen.Spawn();
-                            beaconGen.SetParent(beacon, worldPositionStays: false);
-                            beaconGen.transform.localPosition = new Vector3(0f, -0.1f, 0f);
-
-                            if (beacon.inputs != null && beacon.inputs.Length > 0)
-                            {
-                                beaconGen.outputs.First().connectedTo.Set(beacon);
-                                beaconGen.outputs.First().connectedToSlot = 0;
-                                beacon.inputs.First().connectedTo.Set(beaconGen);
-                                beacon.inputs.First().connectedToSlot = 0;
-                            }
-
-                            beaconGen.ForcePuzzleReset();
-                            beaconGen.MarkDirtyForceUpdateOutputs();
-                        }
-                        beacon.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-                        beacon.SendNetworkUpdateImmediate();
-                    });
+                    timer.Once(0.2f, () => SetTruckDevicePower(beacon, true));
                 }
             }
 
@@ -1549,32 +1576,8 @@ namespace Oxide.Plugins
                         sLight.transform.localRotation = Quaternion.Euler(lightRotations[i]);
 
                         var capturedLight = sLight;
-                        timer.Once(0.2f, () =>
-                        {
-                            if (capturedLight == null || capturedLight.IsDestroyed) return;
-                            var lightGen = GameManager.server.CreateEntity(GeneratorPrefab, capturedLight.transform.position, capturedLight.transform.rotation) as ElectricGenerator;
-                            if (lightGen != null)
-                            {
-                                StripPhysicsAndStability(lightGen);
-                                lightGen.electricAmount = 100f;
-                                lightGen.Spawn();
-                                lightGen.SetParent(capturedLight, worldPositionStays: false);
-                                lightGen.transform.localPosition = new Vector3(0f, -0.1f, 0f);
-
-                                if (capturedLight.inputs != null && capturedLight.inputs.Length > 0)
-                                {
-                                    lightGen.outputs.First().connectedTo.Set(capturedLight);
-                                    lightGen.outputs.First().connectedToSlot = 0;
-                                    capturedLight.inputs.First().connectedTo.Set(lightGen);
-                                    capturedLight.inputs.First().connectedToSlot = 0;
-                                }
-
-                                lightGen.ForcePuzzleReset();
-                                lightGen.MarkDirtyForceUpdateOutputs();
-                            }
-                            capturedLight.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-                            capturedLight.SendNetworkUpdateImmediate();
-                        });
+                        timer.Once(0.2f, () => SetTruckDevicePower(capturedLight, true));
+                        
                     }
                 }
             }
@@ -1609,37 +1612,14 @@ namespace Oxide.Plugins
             if (turret != null && electricSwitch != null)
             {
                 timer.Once(0.2f, () =>
-                {
-                    if (turret == null || turret.IsDestroyed || electricSwitch == null || electricSwitch.IsDestroyed) return;
-
-                    var gen = GameManager.server.CreateEntity(GeneratorPrefab, turret.transform.position, turret.transform.rotation) as ElectricGenerator;
-                    if (gen != null)
-                    {
-                        StripPhysicsAndStability(gen);
-                        gen.electricAmount = 100f;
-                        gen.Spawn();
-                        gen.SetParent(turret, worldPositionStays: false);
-                        gen.transform.localPosition = new Vector3(0f, -0.15f, 0f);
-
-                        gen.outputs.First().connectedTo.Set(electricSwitch);
-                        gen.outputs.First().connectedToSlot = 0;
-                        electricSwitch.inputs.First().connectedTo.Set(gen);
-                        electricSwitch.inputs.First().connectedToSlot = 0;
-
-                        electricSwitch.outputs.First().connectedTo.Set(turret);
-                        electricSwitch.outputs.First().connectedToSlot = 0;
-                        turret.inputs.First().connectedTo.Set(electricSwitch);
-                        turret.inputs.First().connectedToSlot = 0;
-
-                        gen.ForcePuzzleReset();
-                        gen.MarkDirtyForceUpdateOutputs();
-                        electricSwitch.MarkDirtyForceUpdateOutputs();
-                    }
-
-                    turret.SendNetworkUpdateImmediate();
-                });
+             {
+            if (turret == null || turret.IsDestroyed || electricSwitch == null || electricSwitch.IsDestroyed) return;
+            electricSwitch.SetSwitch(true);
+            electricSwitch.SendNetworkUpdateImmediate();
+            SetTruckDevicePower(turret, true);
+            });
             }
-        }
+        }  
         private void SpawnProp(ModularCar car, string prefab, Vector3 localPos, Quaternion localRot)
         {
             var prop = GameManager.server.CreateEntity(prefab, car.transform.position, car.transform.rotation);
@@ -1742,7 +1722,7 @@ namespace Oxide.Plugins
             SaveFlatbedData();
         }
 
-        private void ApplySavedFlatbedState(ModularCar car, FlatbedSaveData state)
+                private void ApplySavedFlatbedState(ModularCar car, FlatbedSaveData state)
         {
             if (car == null || car.IsDestroyed) return;
 
@@ -1758,7 +1738,7 @@ namespace Oxide.Plugins
             {
                 foreach (var sl in sLights)
                 {
-                    PowerUpIoDevice(sl, state.SimpleLightsOn);
+                    SetTruckDevicePower(sl, state.SimpleLightsOn);
                 }
             }
 
@@ -1766,52 +1746,25 @@ namespace Oxide.Plugins
                 .FirstOrDefault(c => c != null && (c.ShortPrefabName.Contains("siren") || c.ShortPrefabName.Contains("flasher")));
             if (beacon != null)
             {
-                PowerUpIoDevice(beacon, state.BeaconOn);
+                SetTruckDevicePower(beacon, state.BeaconOn);
             }
 
-            var fridge = car.children.FirstOrDefault(c => c != null && c.ShortPrefabName.Contains("fridge"));
+            var fridge = car.children.OfType<IOEntity>().FirstOrDefault(c => c != null && c.ShortPrefabName.Contains("fridge"));
             if (fridge != null)
             {
-                var fridgeGen = fridge.GetComponentInChildren<ElectricGenerator>();
-                if (state.FridgeOn)
-                {
-                    fridge.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-                    if (fridgeGen != null)
-                    {
-                        fridgeGen.electricAmount = 100f;
-                        fridgeGen.ForcePuzzleReset();
-                        fridgeGen.MarkDirtyForceUpdateOutputs();
-                    }
-                }
-                else
-                {
-                    fridge.flags &= ~(BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-                    if (fridgeGen != null) fridgeGen.electricAmount = 0f;
-                }
-                fridge.SendNetworkUpdateImmediate();
+                SetTruckDevicePower(fridge, state.FridgeOn);
             }
 
             var electricSwitch = car.children.OfType<ElectricSwitch>().FirstOrDefault();
             var turret = car.children.OfType<AutoTurret>().FirstOrDefault();
-            if (turret != null)
-            {
-                if (state.TurretOn)
-                {
-                    if (!turret.IsOnline())
-                        turret.InitiateStartup();
-                }
-                else
-                {
-                    if (turret.IsOnline())
-                        turret.SetIsOnline(false);
-                }
-                turret.SendNetworkUpdateImmediate();
-            }
-            else if (electricSwitch != null)
+            if (electricSwitch != null)
             {
                 electricSwitch.SetSwitch(state.TurretOn);
-                electricSwitch.MarkDirtyForceUpdateOutputs();
                 electricSwitch.SendNetworkUpdateImmediate();
+            }
+            if (turret != null)
+            {
+                SetTruckDevicePower(turret, state.TurretOn);
             }
         }
     }
