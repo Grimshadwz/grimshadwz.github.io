@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("JunkyardGarageShredder", "1320 Veteran", "2.0.4")]
+    [Info("JunkyardGarageShredder", "Paradox Studios", "2.0.4")]
     [Description("Boosts Junkyard crushable wreck spawns, expands crane pickup targets, places a Salvage Catch Bin with a self-powered Hopper on top, and spawns 2/3/4-module chassis.")]
     public class JunkyardGarageShredder : RustPlugin
     {
