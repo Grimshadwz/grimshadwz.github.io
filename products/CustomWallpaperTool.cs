@@ -12,8 +12,8 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("CustomWallpaperTool", "Paradox Studios", "1.0.3")]
-    [Description("Dedicated Custom Wallpaper Tool (indestructible skinned Spray Can / /wallpaper) that applies Steam Workshop wallpapers cleanly to interior & exterior walls, floors, foundations, and ceilings.")]
+    [Info("CustomWallpaperTool", "Paradox Studios", "1.0.5")]
+    [Description("Dedicated Custom Wallpaper Tool (indestructible skinned Spray Can / /wallpaper) that applies Steam Workshop wallpapers to interior & exterior walls, floors, foundations, and ceilings, and completely prevents wallpaper decay on both sides.")]
     public class CustomWallpaperTool : RustPlugin
     {
         [PluginReference]
@@ -26,6 +26,8 @@ namespace Oxide.Plugins
 
         private StoredData _data;
         private readonly Dictionary<ulong, PlayerSession> _sessions = new Dictionary<ulong, PlayerSession>();
+        private Timer _healTimer;
+        private bool _debugDecay;
 
         #region Data Models
 
@@ -33,6 +35,7 @@ namespace Oxide.Plugins
         {
             public List<WallpaperEntry> CommunityLibrary = new List<WallpaperEntry>();
             public Dictionary<ulong, List<ulong>> PlayerHistory = new Dictionary<ulong, List<ulong>>();
+            public Dictionary<ulong, Dictionary<int, ulong>> ProtectedWallpapers = new Dictionary<ulong, Dictionary<int, ulong>>();
         }
 
         private class WallpaperEntry
@@ -114,10 +117,16 @@ namespace Oxide.Plugins
                         ImageLibrary.Call("AddImage", entry.PreviewUrl, $"cwt_{entry.WorkshopId}", 0UL);
                 }
             }
+
+            // Scan all existing BuildingBlocks on startup so any already-placed wallpapers on either side are protected too
+            ScanAndProtectExistingWallpapers();
+            RestoreAndHealWallpapers();
+            _healTimer = timer.Every(15f, RestoreAndHealWallpapers);
         }
 
         private void Unload()
         {
+            _healTimer?.Destroy();
             SaveData();
             foreach (var player in BasePlayer.activePlayerList)
             {
@@ -134,7 +143,15 @@ namespace Oxide.Plugins
             }
         }
 
-        // Prevent the Custom Wallpaper Tool from ever losing durability
+        private void OnEntityKill(BaseNetworkable entity)
+        {
+            var block = entity as BuildingBlock;
+            if (block != null && block.net != null)
+            {
+                _data.ProtectedWallpapers.Remove(block.net.ID.Value);
+            }
+        }
+
         private void OnLoseCondition(Item item, ref float amount)
         {
             if (IsCustomWallpaperTool(item))
@@ -145,6 +162,34 @@ namespace Oxide.Plugins
                     item.condition = item.maxCondition;
                 }
             }
+        }
+
+        // Prevent decay damage on ANY BuildingBlock that has wallpaper on side 0 OR side 1
+        private object OnEntityTakeDamage(BuildingBlock block, HitInfo info)
+        {
+            if (block == null || info == null || block.net == null) return null;
+
+            if (info.damageTypes.Has(DamageType.Decay))
+            {
+                bool hasProtected = _data.ProtectedWallpapers.ContainsKey(block.net.ID.Value);
+                if (hasProtected || block.HasWallpaper(0) || block.HasWallpaper(1))
+                {
+                    if (hasProtected)
+                    {
+                        NextTick(() =>
+                        {
+                            if (block != null && !block.IsDestroyed)
+                                HealBlockWallpapers(block);
+                        });
+                    }
+
+                    // Keep both wallpaper sides at 100 HP at all times
+                    if (block.HasWallpaper(0)) block.wallpaperHealth = 100f;
+                    if (block.HasWallpaper(1)) block.wallpaperHealth2 = 100f;
+                }
+            }
+
+            return null;
         }
 
         private object OnSprayCanUse(SprayCan tool, BasePlayer player)
@@ -196,6 +241,178 @@ namespace Oxide.Plugins
                 var session = GetSession(player.userID);
                 TryPaintSurface(player, activeItem, session, input.WasJustPressed(BUTTON.FIRE_PRIMARY));
             }
+        }
+
+        #endregion
+
+        #region Zero-Decay Protection & Healing (Both Sides)
+
+        private void ScanAndProtectExistingWallpapers()
+        {
+            int added = 0;
+            foreach (var entity in BaseNetworkable.serverEntities)
+            {
+                var block = entity as BuildingBlock;
+                if (block == null || block.IsDestroyed || block.net == null) continue;
+
+                for (int side = 0; side <= 1; side++)
+                {
+                    if (block.HasWallpaper(side))
+                    {
+                        ulong skinId = block.GetWallpaperSkin(side);
+                        if (skinId > 0UL)
+                        {
+                            if (!_data.ProtectedWallpapers.TryGetValue(block.net.ID.Value, out var map))
+                            {
+                                map = new Dictionary<int, ulong>();
+                                _data.ProtectedWallpapers[block.net.ID.Value] = map;
+                            }
+                            if (!map.ContainsKey(side))
+                            {
+                                map[side] = skinId;
+                                added++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (added > 0)
+            {
+                SaveData();
+            }
+        }
+
+        private void RestoreAndHealWallpapers()
+        {
+            if (_data.ProtectedWallpapers.Count == 0) return;
+
+            List<ulong> deadBlocks = null;
+            int healedCount = 0;
+
+            foreach (var kvp in _data.ProtectedWallpapers)
+            {
+                var block = BaseNetworkable.serverEntities.Find(new NetworkableId(kvp.Key)) as BuildingBlock;
+                if (block == null || block.IsDestroyed)
+                {
+                    if (deadBlocks == null) deadBlocks = new List<ulong>();
+                    deadBlocks.Add(kvp.Key);
+                    continue;
+                }
+
+                if (HealBlockWallpapers(block, kvp.Value))
+                    healedCount++;
+            }
+
+            if (_debugDecay && healedCount > 0)
+            {
+                Puts($"[Debug] Healed/restored zero-decay protection on {healedCount} building block(s).");
+            }
+
+            if (deadBlocks != null)
+            {
+                foreach (var id in deadBlocks)
+                    _data.ProtectedWallpapers.Remove(id);
+            }
+        }
+
+        private bool HealBlockWallpapers(BuildingBlock block, Dictionary<int, ulong> sides = null)
+        {
+            if (block == null || block.IsDestroyed || block.net == null) return false;
+
+            if (sides == null && !_data.ProtectedWallpapers.TryGetValue(block.net.ID.Value, out sides))
+                return false;
+
+            bool updated = false;
+
+            foreach (var sideEntry in sides)
+            {
+                int side = sideEntry.Key;
+                ulong skinId = sideEntry.Value;
+
+                if (skinId == 0UL) continue;
+
+                float beforeHp = side == 0 ? block.wallpaperHealth : block.wallpaperHealth2;
+                bool missingOrWrongSkin = !block.HasWallpaper(side) || block.GetWallpaperSkin(side) != skinId;
+
+                if (missingOrWrongSkin)
+                {
+                    block.SetWallpaper(skinId, side);
+                    updated = true;
+                }
+
+                if (side == 0 && block.wallpaperHealth < 100f)
+                {
+                    block.wallpaperHealth = 100f;
+                    updated = true;
+                }
+                else if (side == 1 && block.wallpaperHealth2 < 100f)
+                {
+                    block.wallpaperHealth2 = 100f;
+                    updated = true;
+                }
+
+                if (updated && _debugDecay)
+                {
+                    Puts($"[Debug] Block {block.net.ID.Value} Side {side} took decay (HP was {beforeHp:F1}, missing={missingOrWrongSkin}) -> Restored to 100 HP & Skin {skinId}");
+                }
+            }
+
+            if (updated)
+            {
+                block.SendNetworkUpdateImmediate();
+            }
+
+            return updated;
+        }
+
+        private void TrackProtectedWallpaper(ulong blockNetId, int side, ulong skinId)
+        {
+            if (skinId == 0UL)
+            {
+                if (_data.ProtectedWallpapers.TryGetValue(blockNetId, out var sides))
+                {
+                    sides.Remove(side);
+                    if (sides.Count == 0)
+                        _data.ProtectedWallpapers.Remove(blockNetId);
+                }
+                return;
+            }
+
+            if (!_data.ProtectedWallpapers.TryGetValue(blockNetId, out var map))
+            {
+                map = new Dictionary<int, ulong>();
+                _data.ProtectedWallpapers[blockNetId] = map;
+            }
+            map[side] = skinId;
+        }
+
+        private void InspectLookedAtWall(BasePlayer player)
+        {
+            RaycastHit hit;
+            if (!Physics.Raycast(player.eyes.HeadRay(), out hit, 6.0f, Layers.Mask.Construction, QueryTriggerInteraction.Ignore))
+            {
+                player.ChatMessage("<color=#ff6b6b>[Wallpaper Check]</color> Look directly at a wall, floor, or ceiling within 6m.");
+                return;
+            }
+
+            var block = hit.GetEntity() as BuildingBlock;
+            if (block == null || block.net == null)
+            {
+                player.ChatMessage("<color=#ff6b6b>[Wallpaper Check]</color> Not looking at a valid building block.");
+                return;
+            }
+
+            int hitSide = GetTargetSurfaceSide(block, hit.normal);
+            bool isProtected = _data.ProtectedWallpapers.TryGetValue(block.net.ID.Value, out var protSides);
+            ulong prot0 = (isProtected && protSides.ContainsKey(0)) ? protSides[0] : 0UL;
+            ulong prot1 = (isProtected && protSides.ContainsKey(1)) ? protSides[1] : 0UL;
+
+            player.ChatMessage(
+                $"<color=#4ecdc4>[Wallpaper Check]</color> Block: <b>{block.ShortPrefabName}</b> (ID: {block.net.ID.Value}) | Aiming Side: <b>{hitSide}</b>\n" +
+                $"• <b>Side 0 (Interior/Floor):</b> Has={block.HasWallpaper(0)} | Skin={block.GetWallpaperSkin(0)} | HP={block.wallpaperHealth:F1}/100 | Protected={(prot0 > 0 ? prot0.ToString() : "No")}\n" +
+                $"• <b>Side 1 (Exterior/Ceiling):</b> Has={block.HasWallpaper(1)} | Skin={block.GetWallpaperSkin(1)} | HP={block.wallpaperHealth2:F1}/100 | Protected={(prot1 > 0 ? prot1.ToString() : "No")}"
+            );
         }
 
         #endregion
@@ -305,8 +522,11 @@ namespace Oxide.Plugins
             {
                 block.RemoveWallpaper(side);
                 block.SetWallpaper(targetSkin, side);
+                if (side == 0) block.wallpaperHealth = 100f;
+                else block.wallpaperHealth2 = 100f;
             }
 
+            TrackProtectedWallpaper(blockNetId, side, targetSkin);
             block.SendNetworkUpdateImmediate();
 
             Effect.server.Run("assets/prefabs/tools/spraycan/reskineffect.prefab", hit.point);
@@ -462,10 +682,24 @@ namespace Oxide.Plugins
         [ChatCommand("wallpaper")]
         private void CmdWallpaper(BasePlayer player, string command, string[] args)
         {
-            if (args != null && args.Length > 0 && args[0].Equals("tool", StringComparison.OrdinalIgnoreCase))
+            if (args != null && args.Length > 0)
             {
-                GiveCustomTool(player);
-                return;
+                if (args[0].Equals("tool", StringComparison.OrdinalIgnoreCase))
+                {
+                    GiveCustomTool(player);
+                    return;
+                }
+                if (args[0].Equals("check", StringComparison.OrdinalIgnoreCase))
+                {
+                    InspectLookedAtWall(player);
+                    return;
+                }
+                if (args[0].Equals("debug", StringComparison.OrdinalIgnoreCase))
+                {
+                    _debugDecay = !_debugDecay;
+                    player.ChatMessage($"<color=#4ecdc4>[Wallpaper]</color> Decay console debug logging is now <b>{(_debugDecay ? "ON" : "OFF")}</b>. (Heal timer runs every 15s)");
+                    return;
+                }
             }
 
             OpenUI(player);
