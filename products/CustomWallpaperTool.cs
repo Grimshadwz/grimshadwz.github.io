@@ -12,8 +12,8 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("CustomWallpaperTool", "Paradox Studios", "1.0.6")]
-    [Description("Dedicated Custom Wallpaper Tool (indestructible skinned Spray Can / /wallpaper) that applies Steam Workshop wallpapers to interior & exterior walls, floors, foundations, and ceilings, prevents wallpaper decay on both sides, and allows removing broken skins.")]
+    [Info("CustomWallpaperTool", "Paradox Studios", "1.0.8")]
+    [Description("Dedicated Custom Wallpaper Tool (indestructible skinned Spray Can / /wallpaper) that applies Steam Workshop wallpapers to interior & exterior walls, floors, foundations, and ceilings, aligns floor/ceiling rotation cleanly, respects vanilla Wallpaper Tool overwrites/removals, prevents decay on custom wallpapers, and allows removing broken skins.")]
     public class CustomWallpaperTool : RustPlugin
     {
         [PluginReference]
@@ -35,7 +35,13 @@ namespace Oxide.Plugins
         {
             public List<WallpaperEntry> CommunityLibrary = new List<WallpaperEntry>();
             public Dictionary<ulong, List<ulong>> PlayerHistory = new Dictionary<ulong, List<ulong>>();
-            public Dictionary<ulong, Dictionary<int, ulong>> ProtectedWallpapers = new Dictionary<ulong, Dictionary<int, ulong>>();
+            public Dictionary<ulong, Dictionary<int, ProtectedSideData>> ProtectedWallpapers = new Dictionary<ulong, Dictionary<int, ProtectedSideData>>();
+        }
+
+        private class ProtectedSideData
+        {
+            public ulong SkinId;
+            public float Rotation;
         }
 
         private class WallpaperEntry
@@ -57,6 +63,7 @@ namespace Oxide.Plugins
             public float NextAllowedPaintTime;
             public ulong LastPaintedBlockId;
             public int LastPaintedSide = -1;
+            public float ManualRotationOffset;
         }
 
         private class SteamFileResponse
@@ -169,20 +176,13 @@ namespace Oxide.Plugins
 
             if (info.damageTypes.Has(DamageType.Decay))
             {
-                bool hasProtected = _data.ProtectedWallpapers.ContainsKey(block.net.ID.Value);
-                if (hasProtected || block.HasWallpaper(0) || block.HasWallpaper(1))
+                if (_data.ProtectedWallpapers.ContainsKey(block.net.ID.Value))
                 {
-                    if (hasProtected)
+                    NextTick(() =>
                     {
-                        NextTick(() =>
-                        {
-                            if (block != null && !block.IsDestroyed)
-                                HealBlockWallpapers(block);
-                        });
-                    }
-
-                    if (block.HasWallpaper(0)) block.wallpaperHealth = 100f;
-                    if (block.HasWallpaper(1)) block.wallpaperHealth2 = 100f;
+                        if (block != null && !block.IsDestroyed)
+                            HealBlockWallpapers(block);
+                    });
                 }
             }
 
@@ -224,12 +224,33 @@ namespace Oxide.Plugins
             if (player == null || input == null) return;
 
             var activeItem = player.GetActiveItem();
+            if (activeItem == null) return;
+
+            // 1. If the player is holding the VANILLA Wallpaper Tool (wallpaper.tool) and clicks/uses it,
+            //    sync ProtectedWallpapers so vanilla placements or removals immediately unregister our custom protection!
+            if (activeItem.info.shortname == "wallpaper.tool")
+            {
+                if (input.WasJustPressed(BUTTON.FIRE_PRIMARY) || input.IsDown(BUTTON.FIRE_PRIMARY) ||
+                    input.WasJustPressed(BUTTON.FIRE_SECONDARY) || input.IsDown(BUTTON.FIRE_SECONDARY))
+                {
+                    SyncVanillaWallpaperAction(player);
+                }
+                return;
+            }
+
+            // 2. Otherwise handle our Custom Wallpaper Tool
             if (!IsCustomWallpaperTool(activeItem))
                 return;
 
             if (input.WasJustPressed(BUTTON.FIRE_THIRD) || input.WasJustPressed(BUTTON.RELOAD))
             {
                 OpenUI(player);
+                return;
+            }
+
+            if (input.WasJustPressed(BUTTON.USE))
+            {
+                TryRotateLookedAtSurface(player);
                 return;
             }
 
@@ -240,13 +261,144 @@ namespace Oxide.Plugins
             }
         }
 
+        private void SyncVanillaWallpaperAction(BasePlayer player)
+        {
+            RaycastHit hit;
+            if (!Physics.Raycast(player.eyes.HeadRay(), out hit, 6.0f, Layers.Mask.Construction, QueryTriggerInteraction.Ignore))
+                return;
+
+            var block = hit.GetEntity() as BuildingBlock;
+            if (block == null || block.IsDestroyed || block.net == null)
+                return;
+
+            ulong netId = block.net.ID.Value;
+            if (!_data.ProtectedWallpapers.ContainsKey(netId))
+                return;
+
+            // Check after the vanilla RPC processes (0.25s later): if the vanilla tool removed or replaced a wallpaper,
+            // drop our custom protection on that side so the heal timer never reverts the player's vanilla change!
+            timer.Once(0.25f, () =>
+            {
+                if (block == null || block.IsDestroyed || block.net == null) return;
+                if (!_data.ProtectedWallpapers.TryGetValue(netId, out var sides)) return;
+
+                List<int> toUnprotect = null;
+                foreach (var kvp in sides)
+                {
+                    int side = kvp.Key;
+                    ulong protectedSkin = kvp.Value.SkinId;
+
+                    if (!block.HasWallpaper(side) || block.GetWallpaperSkin(side) != protectedSkin)
+                    {
+                        if (toUnprotect == null) toUnprotect = new List<int>();
+                        toUnprotect.Add(side);
+                    }
+                }
+
+                if (toUnprotect != null)
+                {
+                    foreach (int s in toUnprotect)
+                        sides.Remove(s);
+
+                    if (sides.Count == 0)
+                        _data.ProtectedWallpapers.Remove(netId);
+
+                    SaveData();
+
+                    if (_debugDecay)
+                        Puts($"[Debug] Vanilla Wallpaper Tool modified Block {netId} -> Unregistered custom protection on side(s): {string.Join(", ", toUnprotect)}");
+                }
+            });
+        }
+
         #endregion
 
-        #region Zero-Decay Protection & Healing (Both Sides)
+        #region Floor, Foundation & Ceiling Rotation Alignment
+
+        private bool IsHorizontalSurface(BuildingBlock block)
+        {
+            string prefab = block.PrefabName;
+            return prefab.Contains("foundation") || prefab.Contains("floor") || prefab.Contains("roof");
+        }
+
+        private float CalculateVanillaFloorRotation(BasePlayer player, BuildingBlock block, float manualOffset)
+        {
+            Vector3 lookForward = player.eyes.HeadForward();
+            lookForward.y = 0f;
+            if (lookForward.sqrMagnitude < 0.001f)
+                lookForward = Vector3.forward;
+            lookForward.Normalize();
+
+            Vector3 localLook = block.transform.InverseTransformDirection(lookForward);
+            float rawAngle = Mathf.Atan2(localLook.x, localLook.z) * Mathf.Rad2Deg;
+            float snapped = Mathf.Round(rawAngle / 90f) * 90f;
+            return Mathf.Repeat(snapped + manualOffset, 360f);
+        }
+
+        private void ApplyWallpaperWithRotation(BuildingBlock block, ulong skinId, int side, float rotation)
+        {
+            block.RemoveWallpaper(side);
+            block.SetWallpaper(skinId, side, rotation);
+
+            if (side == 0)
+            {
+                block.wallpaperRotation = rotation;
+                block.wallpaperHealth = 100f;
+            }
+            else
+            {
+                block.wallpaperRotation2 = rotation;
+                block.wallpaperHealth2 = 100f;
+            }
+        }
+
+        private void TryRotateLookedAtSurface(BasePlayer player)
+        {
+            RaycastHit hit;
+            if (!Physics.Raycast(player.eyes.HeadRay(), out hit, 5.5f, Layers.Mask.Construction, QueryTriggerInteraction.Ignore))
+                return;
+
+            var block = hit.GetEntity() as BuildingBlock;
+            if (block == null || block.IsDestroyed || block.net == null)
+                return;
+
+            if (!IsHorizontalSurface(block))
+                return;
+
+            if (!player.CanBuild(block.WorldSpaceBounds()))
+            {
+                player.ChatMessage("<color=#ff6b6b>[Wallpaper]</color> Building privilege required.");
+                return;
+            }
+
+            int side = GetTargetSurfaceSide(block, hit.normal);
+            if (side < 0 || !block.HasWallpaper(side))
+                return;
+
+            ulong currentSkin = block.GetWallpaperSkin(side);
+            if (currentSkin == 0UL) return;
+
+            float currentRot = side == 0 ? block.wallpaperRotation : block.wallpaperRotation2;
+            float nextRot = Mathf.Repeat(Mathf.Round(currentRot / 90f) * 90f + 90f, 360f);
+
+            ApplyWallpaperWithRotation(block, currentSkin, side, nextRot);
+            TrackProtectedWallpaper(block.net.ID.Value, side, currentSkin, nextRot);
+            block.SendNetworkUpdateImmediate();
+
+            Effect.server.Run("assets/prefabs/tools/spraycan/reskineffect.prefab", hit.point);
+        }
+
+        #endregion
+
+        #region Zero-Decay Protection & Healing (Custom Wallpapers Only)
 
         private void ScanAndProtectExistingWallpapers()
         {
+            // Only protect wallpapers whose SkinId belongs to our CommunityLibrary (custom Workshop wallpapers),
+            // leaving vanilla wallpapers completely untouched.
+            HashSet<ulong> customIds = new HashSet<ulong>(_data.CommunityLibrary.Select(x => x.WorkshopId));
             int added = 0;
+
             foreach (var entity in BaseNetworkable.serverEntities)
             {
                 var block = entity as BuildingBlock;
@@ -257,16 +409,19 @@ namespace Oxide.Plugins
                     if (block.HasWallpaper(side))
                     {
                         ulong skinId = block.GetWallpaperSkin(side);
-                        if (skinId > 0UL)
+                        if (skinId > 0UL && customIds.Contains(skinId))
                         {
                             if (!_data.ProtectedWallpapers.TryGetValue(block.net.ID.Value, out var map))
                             {
-                                map = new Dictionary<int, ulong>();
+                                map = new Dictionary<int, ProtectedSideData>();
                                 _data.ProtectedWallpapers[block.net.ID.Value] = map;
                             }
                             if (!map.ContainsKey(side))
                             {
-                                map[side] = skinId;
+                                float rot = IsHorizontalSurface(block)
+                                    ? (side == 0 ? block.wallpaperRotation : block.wallpaperRotation2)
+                                    : 0f;
+                                map[side] = new ProtectedSideData { SkinId = skinId, Rotation = rot };
                                 added++;
                             }
                         }
@@ -313,7 +468,7 @@ namespace Oxide.Plugins
             }
         }
 
-        private bool HealBlockWallpapers(BuildingBlock block, Dictionary<int, ulong> sides = null)
+        private bool HealBlockWallpapers(BuildingBlock block, Dictionary<int, ProtectedSideData> sides = null)
         {
             if (block == null || block.IsDestroyed || block.net == null) return false;
 
@@ -325,16 +480,16 @@ namespace Oxide.Plugins
             foreach (var sideEntry in sides)
             {
                 int side = sideEntry.Key;
-                ulong skinId = sideEntry.Value;
+                var info = sideEntry.Value;
+                if (info == null || info.SkinId == 0UL) continue;
 
-                if (skinId == 0UL) continue;
-
+                float rot = IsHorizontalSurface(block) ? info.Rotation : 0f;
                 float beforeHp = side == 0 ? block.wallpaperHealth : block.wallpaperHealth2;
-                bool missingOrWrongSkin = !block.HasWallpaper(side) || block.GetWallpaperSkin(side) != skinId;
+                bool missingOrWrongSkin = !block.HasWallpaper(side) || block.GetWallpaperSkin(side) != info.SkinId;
 
                 if (missingOrWrongSkin)
                 {
-                    block.SetWallpaper(skinId, side);
+                    block.SetWallpaper(info.SkinId, side, rot);
                     updated = true;
                 }
 
@@ -351,7 +506,7 @@ namespace Oxide.Plugins
 
                 if (updated && _debugDecay)
                 {
-                    Puts($"[Debug] Block {block.net.ID.Value} Side {side} took decay (HP was {beforeHp:F1}, missing={missingOrWrongSkin}) -> Restored to 100 HP & Skin {skinId}");
+                    Puts($"[Debug] Block {block.net.ID.Value} Side {side} took decay (HP was {beforeHp:F1}, missing={missingOrWrongSkin}) -> Restored to 100 HP & Skin {info.SkinId}");
                 }
             }
 
@@ -363,7 +518,7 @@ namespace Oxide.Plugins
             return updated;
         }
 
-        private void TrackProtectedWallpaper(ulong blockNetId, int side, ulong skinId)
+        private void TrackProtectedWallpaper(ulong blockNetId, int side, ulong skinId, float rotation = 0f)
         {
             if (skinId == 0UL)
             {
@@ -373,15 +528,17 @@ namespace Oxide.Plugins
                     if (sides.Count == 0)
                         _data.ProtectedWallpapers.Remove(blockNetId);
                 }
+                SaveData();
                 return;
             }
 
             if (!_data.ProtectedWallpapers.TryGetValue(blockNetId, out var map))
             {
-                map = new Dictionary<int, ulong>();
+                map = new Dictionary<int, ProtectedSideData>();
                 _data.ProtectedWallpapers[blockNetId] = map;
             }
-            map[side] = skinId;
+            map[side] = new ProtectedSideData { SkinId = skinId, Rotation = rotation };
+            SaveData();
         }
 
         private void RemoveWallpaperFromLibrary(BasePlayer player, ulong workshopId)
@@ -398,18 +555,16 @@ namespace Oxide.Plugins
                 hist.RemoveAll(id => id == workshopId);
             }
 
-            // Clear active selection for anyone currently holding that broken skin
             foreach (var sess in _sessions.Values)
             {
                 if (sess.ActiveSkinId == workshopId)
                     sess.ActiveSkinId = 0UL;
             }
 
-            // Strip it off any walls in the world that still had it applied
             var affectedBlocks = new List<ulong>();
             foreach (var kvp in _data.ProtectedWallpapers)
             {
-                var sidesToRemove = kvp.Value.Where(s => s.Value == workshopId).Select(s => s.Key).ToList();
+                var sidesToRemove = kvp.Value.Where(s => s.Value != null && s.Value.SkinId == workshopId).Select(s => s.Key).ToList();
                 if (sidesToRemove.Count == 0) continue;
 
                 var block = BaseNetworkable.serverEntities.Find(new NetworkableId(kvp.Key)) as BuildingBlock;
@@ -461,13 +616,13 @@ namespace Oxide.Plugins
 
             int hitSide = GetTargetSurfaceSide(block, hit.normal);
             bool isProtected = _data.ProtectedWallpapers.TryGetValue(block.net.ID.Value, out var protSides);
-            ulong prot0 = (isProtected && protSides.ContainsKey(0)) ? protSides[0] : 0UL;
-            ulong prot1 = (isProtected && protSides.ContainsKey(1)) ? protSides[1] : 0UL;
+            bool prot0 = isProtected && protSides.ContainsKey(0);
+            bool prot1 = isProtected && protSides.ContainsKey(1);
 
             player.ChatMessage(
                 $"<color=#4ecdc4>[Wallpaper Check]</color> Block: <b>{block.ShortPrefabName}</b> (ID: {block.net.ID.Value}) | Aiming Side: <b>{hitSide}</b>\n" +
-                $"• <b>Side 0 (Interior/Floor):</b> Has={block.HasWallpaper(0)} | Skin={block.GetWallpaperSkin(0)} | HP={block.wallpaperHealth:F1}/100 | Protected={(prot0 > 0 ? "Yes" : "No")}\n" +
-                $"• <b>Side 1 (Exterior/Ceiling):</b> Has={block.HasWallpaper(1)} | Skin={block.GetWallpaperSkin(1)} | HP={block.wallpaperHealth2:F1}/100 | Protected={(prot1 > 0 ? "Yes" : "No")}"
+                $"• <b>Side 0 (Interior/Floor):</b> Has={block.HasWallpaper(0)} | Skin={block.GetWallpaperSkin(0)} | Rot={block.wallpaperRotation:F0}° | HP={block.wallpaperHealth:F1}/100 | Protected={(prot0 ? "Yes" : "No")}\n" +
+                $"• <b>Side 1 (Exterior/Ceiling):</b> Has={block.HasWallpaper(1)} | Skin={block.GetWallpaperSkin(1)} | Rot={block.wallpaperRotation2:F0}° | HP={block.wallpaperHealth2:F1}/100 | Protected={(prot1 ? "Yes" : "No")}"
             );
         }
 
@@ -489,7 +644,7 @@ namespace Oxide.Plugins
                 if (IsCustomWallpaperTool(existing))
                 {
                     if (existing.hasCondition) existing.condition = existing.maxCondition;
-                    player.ChatMessage("<color=#4ecdc4>[Wallpaper]</color> You already have a <b>Custom Wallpaper Tool</b> on your hotbar! Hold it and press <b>Middle-Click</b> or <b>R</b> to pick a skin.");
+                    player.ChatMessage("<color=#4ecdc4>[Wallpaper]</color> You already have a <b>Custom Wallpaper Tool</b> on your hotbar! Press <b>Middle-Click</b> or <b>R</b> to pick a skin (press <b>E</b> on floors/ceilings to rotate 90°).");
                     return;
                 }
             }
@@ -517,7 +672,7 @@ namespace Oxide.Plugins
                 item.Drop(player.transform.position, Vector3.up);
             }
 
-            player.ChatMessage("<color=#4ecdc4>[Wallpaper]</color> Received <b>Custom Wallpaper Tool</b>! Equip it and press <b>Middle-Click</b> or <b>R</b> to choose a Workshop wallpaper, then <b>Left-Click</b> walls, floors, or ceilings to apply.");
+            player.ChatMessage("<color=#4ecdc4>[Wallpaper]</color> Received <b>Custom Wallpaper Tool</b>! Press <b>Middle-Click</b> or <b>R</b> to choose a skin, <b>Left-Click</b> to apply, and <b>E</b> on floors/ceilings to rotate 90°.");
         }
 
         private void TryPaintSurface(BasePlayer player, Item toolItem, PlayerSession session, bool justPressed)
@@ -565,9 +720,15 @@ namespace Oxide.Plugins
 
             ulong targetSkin = session.ClearMode ? 0UL : session.ActiveSkinId;
 
+            float targetRotation = IsHorizontalSurface(block)
+                ? CalculateVanillaFloorRotation(player, block, session.ManualRotationOffset)
+                : 0f;
+
             if (targetSkin == 0UL && !block.HasWallpaper(side))
                 return;
-            if (targetSkin > 0UL && block.HasWallpaper(side) && block.GetWallpaperSkin(side) == targetSkin)
+
+            float currentRot = side == 0 ? block.wallpaperRotation : block.wallpaperRotation2;
+            if (targetSkin > 0UL && block.HasWallpaper(side) && block.GetWallpaperSkin(side) == targetSkin && Mathf.Approximately(currentRot, targetRotation))
                 return;
 
             if (targetSkin == 0UL)
@@ -576,13 +737,10 @@ namespace Oxide.Plugins
             }
             else
             {
-                block.RemoveWallpaper(side);
-                block.SetWallpaper(targetSkin, side);
-                if (side == 0) block.wallpaperHealth = 100f;
-                else block.wallpaperHealth2 = 100f;
+                ApplyWallpaperWithRotation(block, targetSkin, side, targetRotation);
             }
 
-            TrackProtectedWallpaper(blockNetId, side, targetSkin);
+            TrackProtectedWallpaper(blockNetId, side, targetSkin, targetRotation);
             block.SendNetworkUpdateImmediate();
 
             Effect.server.Run("assets/prefabs/tools/spraycan/reskineffect.prefab", hit.point);
@@ -864,6 +1022,18 @@ namespace Oxide.Plugins
             OpenUI(player);
         }
 
+        [ConsoleCommand("cwt.rotate")]
+        private void ConsoleRotateOffset(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+
+            var session = GetSession(player.userID);
+            session.ManualRotationOffset = Mathf.Repeat(session.ManualRotationOffset + 90f, 360f);
+            session.LastPaintedBlockId = 0;
+            OpenUI(player);
+        }
+
         [ConsoleCommand("cwt.remove")]
         private void ConsoleRemoveSkin(ConsoleSystem.Arg arg)
         {
@@ -982,22 +1152,29 @@ namespace Oxide.Plugins
             elements.Add(new CuiButton
             {
                 Button = { Command = "cwt.tab community", Color = commColor },
-                RectTransform = { AnchorMin = "0.02 0.74", AnchorMax = "0.26 0.80" },
-                Text = { Text = $"COMMUNITY LIBRARY ({_data.CommunityLibrary.Count})", FontSize = 11, Align = TextAnchor.MiddleCenter }
+                RectTransform = { AnchorMin = "0.02 0.74", AnchorMax = "0.23 0.80" },
+                Text = { Text = $"COMMUNITY ({_data.CommunityLibrary.Count})", FontSize = 11, Align = TextAnchor.MiddleCenter }
             }, UI_MAIN);
 
             int personalCount = _data.PlayerHistory.TryGetValue(player.userID, out var histList) ? histList.Count : 0;
             elements.Add(new CuiButton
             {
                 Button = { Command = "cwt.tab personal", Color = persColor },
-                RectTransform = { AnchorMin = "0.27 0.74", AnchorMax = "0.51 0.80" },
+                RectTransform = { AnchorMin = "0.24 0.74", AnchorMax = "0.45 0.80" },
                 Text = { Text = $"MY HISTORY ({personalCount})", FontSize = 11, Align = TextAnchor.MiddleCenter }
             }, UI_MAIN);
 
             elements.Add(new CuiButton
             {
+                Button = { Command = "cwt.rotate", Color = "0.26 0.34 0.46 1" },
+                RectTransform = { AnchorMin = "0.46 0.74", AnchorMax = "0.62 0.80" },
+                Text = { Text = $"FLOOR ROT: +{session.ManualRotationOffset:F0}°", FontSize = 11, Align = TextAnchor.MiddleCenter }
+            }, UI_MAIN);
+
+            elements.Add(new CuiButton
+            {
                 Button = { Command = "cwt.mode clear", Color = clearColor },
-                RectTransform = { AnchorMin = "0.62 0.74", AnchorMax = "0.79 0.80" },
+                RectTransform = { AnchorMin = "0.63 0.74", AnchorMax = "0.79 0.80" },
                 Text = { Text = "CLEAR WALLPAPER", FontSize = 11, Align = TextAnchor.MiddleCenter }
             }, UI_MAIN);
 
@@ -1072,7 +1249,6 @@ namespace Oxide.Plugins
                     RectTransform = { AnchorMin = "0.04 0.02", AnchorMax = "0.96 0.27" }
                 }, cardId);
 
-                // Main tile select button
                 elements.Add(new CuiButton
                 {
                     Button = { Command = $"cwt.select {entry.WorkshopId}", Color = "0 0 0 0" },
@@ -1080,7 +1256,6 @@ namespace Oxide.Plugins
                     Text = { Text = "" }
                 }, cardId);
 
-                // Small red X button in the top-right corner of each card to remove broken/unwanted skins
                 elements.Add(new CuiButton
                 {
                     Button = { Command = $"cwt.remove {entry.WorkshopId}", Color = "0.78 0.20 0.20 0.92" },
