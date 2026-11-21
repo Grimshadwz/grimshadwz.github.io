@@ -12,7 +12,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("CustomWallpaperTool", "1320Veteran", "3.5.0")]
+    [Info("CustomWallpaperTool", "Paradox Studios", "1.0.6")]
     [Description("Dedicated Custom Wallpaper Tool (indestructible skinned Spray Can / /wallpaper) that applies Steam Workshop wallpapers to interior & exterior walls, floors, foundations, and ceilings, prevents wallpaper decay on both sides, and allows removing broken skins.")]
     public class CustomWallpaperTool : RustPlugin
     {
