@@ -12,8 +12,8 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("CustomWallpaperTool", "Paradox Studios", "1.0.5")]
-    [Description("Dedicated Custom Wallpaper Tool (indestructible skinned Spray Can / /wallpaper) that applies Steam Workshop wallpapers to interior & exterior walls, floors, foundations, and ceilings, and completely prevents wallpaper decay on both sides.")]
+    [Info("CustomWallpaperTool", "1320Veteran", "3.5.0")]
+    [Description("Dedicated Custom Wallpaper Tool (indestructible skinned Spray Can / /wallpaper) that applies Steam Workshop wallpapers to interior & exterior walls, floors, foundations, and ceilings, prevents wallpaper decay on both sides, and allows removing broken skins.")]
     public class CustomWallpaperTool : RustPlugin
     {
         [PluginReference]
@@ -118,7 +118,6 @@ namespace Oxide.Plugins
                 }
             }
 
-            // Scan all existing BuildingBlocks on startup so any already-placed wallpapers on either side are protected too
             ScanAndProtectExistingWallpapers();
             RestoreAndHealWallpapers();
             _healTimer = timer.Every(15f, RestoreAndHealWallpapers);
@@ -164,7 +163,6 @@ namespace Oxide.Plugins
             }
         }
 
-        // Prevent decay damage on ANY BuildingBlock that has wallpaper on side 0 OR side 1
         private object OnEntityTakeDamage(BuildingBlock block, HitInfo info)
         {
             if (block == null || info == null || block.net == null) return null;
@@ -183,7 +181,6 @@ namespace Oxide.Plugins
                         });
                     }
 
-                    // Keep both wallpaper sides at 100 HP at all times
                     if (block.HasWallpaper(0)) block.wallpaperHealth = 100f;
                     if (block.HasWallpaper(1)) block.wallpaperHealth2 = 100f;
                 }
@@ -387,6 +384,65 @@ namespace Oxide.Plugins
             map[side] = skinId;
         }
 
+        private void RemoveWallpaperFromLibrary(BasePlayer player, ulong workshopId)
+        {
+            if (workshopId == 0UL) return;
+
+            var removed = _data.CommunityLibrary.FirstOrDefault(x => x.WorkshopId == workshopId);
+            string title = removed != null ? removed.Title : workshopId.ToString();
+
+            _data.CommunityLibrary.RemoveAll(x => x.WorkshopId == workshopId);
+
+            foreach (var hist in _data.PlayerHistory.Values)
+            {
+                hist.RemoveAll(id => id == workshopId);
+            }
+
+            // Clear active selection for anyone currently holding that broken skin
+            foreach (var sess in _sessions.Values)
+            {
+                if (sess.ActiveSkinId == workshopId)
+                    sess.ActiveSkinId = 0UL;
+            }
+
+            // Strip it off any walls in the world that still had it applied
+            var affectedBlocks = new List<ulong>();
+            foreach (var kvp in _data.ProtectedWallpapers)
+            {
+                var sidesToRemove = kvp.Value.Where(s => s.Value == workshopId).Select(s => s.Key).ToList();
+                if (sidesToRemove.Count == 0) continue;
+
+                var block = BaseNetworkable.serverEntities.Find(new NetworkableId(kvp.Key)) as BuildingBlock;
+                foreach (int side in sidesToRemove)
+                {
+                    kvp.Value.Remove(side);
+                    if (block != null && !block.IsDestroyed)
+                    {
+                        block.RemoveWallpaper(side);
+                    }
+                }
+
+                if (block != null && !block.IsDestroyed)
+                {
+                    block.SendNetworkUpdateImmediate();
+                }
+
+                if (kvp.Value.Count == 0)
+                    affectedBlocks.Add(kvp.Key);
+            }
+
+            foreach (var id in affectedBlocks)
+                _data.ProtectedWallpapers.Remove(id);
+
+            SaveData();
+
+            if (player != null)
+            {
+                player.ChatMessage($"<color=#ff6b6b>[Wallpaper]</color> Removed broken skin <b>{title}</b> ({workshopId}) from the library & history.");
+                OpenUI(player);
+            }
+        }
+
         private void InspectLookedAtWall(BasePlayer player)
         {
             RaycastHit hit;
@@ -410,8 +466,8 @@ namespace Oxide.Plugins
 
             player.ChatMessage(
                 $"<color=#4ecdc4>[Wallpaper Check]</color> Block: <b>{block.ShortPrefabName}</b> (ID: {block.net.ID.Value}) | Aiming Side: <b>{hitSide}</b>\n" +
-                $"• <b>Side 0 (Interior/Floor):</b> Has={block.HasWallpaper(0)} | Skin={block.GetWallpaperSkin(0)} | HP={block.wallpaperHealth:F1}/100 | Protected={(prot0 > 0 ? prot0.ToString() : "No")}\n" +
-                $"• <b>Side 1 (Exterior/Ceiling):</b> Has={block.HasWallpaper(1)} | Skin={block.GetWallpaperSkin(1)} | HP={block.wallpaperHealth2:F1}/100 | Protected={(prot1 > 0 ? prot1.ToString() : "No")}"
+                $"• <b>Side 0 (Interior/Floor):</b> Has={block.HasWallpaper(0)} | Skin={block.GetWallpaperSkin(0)} | HP={block.wallpaperHealth:F1}/100 | Protected={(prot0 > 0 ? "Yes" : "No")}\n" +
+                $"• <b>Side 1 (Exterior/Ceiling):</b> Has={block.HasWallpaper(1)} | Skin={block.GetWallpaperSkin(1)} | HP={block.wallpaperHealth2:F1}/100 | Protected={(prot1 > 0 ? "Yes" : "No")}"
             );
         }
 
@@ -697,7 +753,19 @@ namespace Oxide.Plugins
                 if (args[0].Equals("debug", StringComparison.OrdinalIgnoreCase))
                 {
                     _debugDecay = !_debugDecay;
-                    player.ChatMessage($"<color=#4ecdc4>[Wallpaper]</color> Decay console debug logging is now <b>{(_debugDecay ? "ON" : "OFF")}</b>. (Heal timer runs every 15s)");
+                    player.ChatMessage($"<color=#4ecdc4>[Wallpaper]</color> Decay console debug logging is now <b>{(_debugDecay ? "ON" : "OFF")}</b>.");
+                    return;
+                }
+                if (args[0].Equals("remove", StringComparison.OrdinalIgnoreCase) || args[0].Equals("delete", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (args.Length > 1 && ulong.TryParse(args[1], out ulong targetId))
+                    {
+                        RemoveWallpaperFromLibrary(player, targetId);
+                    }
+                    else
+                    {
+                        player.ChatMessage("<color=#ff6b6b>[Wallpaper]</color> Usage: <b>/wallpaper remove <workshopID></b> (or click the red <b>X</b> on any tile in /wallpaper).");
+                    }
                     return;
                 }
             }
@@ -794,6 +862,19 @@ namespace Oxide.Plugins
             if (id > 0) AddToPlayerHistory(player.userID, id);
             SaveData();
             OpenUI(player);
+        }
+
+        [ConsoleCommand("cwt.remove")]
+        private void ConsoleRemoveSkin(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+
+            ulong id = arg.GetUInt64(0, 0);
+            if (id > 0)
+            {
+                RemoveWallpaperFromLibrary(player, id);
+            }
         }
 
         [ConsoleCommand("cwt.mode")]
@@ -991,11 +1072,20 @@ namespace Oxide.Plugins
                     RectTransform = { AnchorMin = "0.04 0.02", AnchorMax = "0.96 0.27" }
                 }, cardId);
 
+                // Main tile select button
                 elements.Add(new CuiButton
                 {
                     Button = { Command = $"cwt.select {entry.WorkshopId}", Color = "0 0 0 0" },
                     RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" },
                     Text = { Text = "" }
+                }, cardId);
+
+                // Small red X button in the top-right corner of each card to remove broken/unwanted skins
+                elements.Add(new CuiButton
+                {
+                    Button = { Command = $"cwt.remove {entry.WorkshopId}", Color = "0.78 0.20 0.20 0.92" },
+                    RectTransform = { AnchorMin = "0.83 0.83", AnchorMax = "0.97 0.97" },
+                    Text = { Text = "X", FontSize = 10, Align = TextAnchor.MiddleCenter }
                 }, cardId);
             }
 
