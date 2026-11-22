@@ -1,11 +1,17 @@
 
                         ////////*********[ ARMED TRUCK COMMANDS LIST]***********///////
 
+
+
+
 /buildbed — Builds the 3-slot armed flatbed onto the modular car you are looking at (requires at least a 3-socket chassis with an empty rear socket and armedflatbed.use permission).
 
 /removebed — Strips the custom flatbed, attached deployables, and saved paged storage/turret data from the modular car you are looking at.
 
 /truckui — Toggles the dashboard CUI control panel while seated inside or looking directly at a modular car within 8 meters.
+
+
+
 
                         ////////*********[ Custom Wallpaper Tool ]***********///////
 
@@ -23,6 +29,9 @@
 
 /wptool — Direct shortcut to receive the Custom Wallpaper Tool.
 
+
+
+
                         ////////*********[ Heavy Armed Zombies ]***********///////
 
 /setradtown — Adds your current position as a Radtown zone (using the configured RadTownRadius) and immediately spawns a full configured squad of Heavy Armed Zombies there.
@@ -35,9 +44,15 @@
 	grenade
 	c4
 
+
+
+
                         ////////*********[ My Base Companion ]***********///////
 
 /companion — Gives you a deployable Base Companion Post (skinned wooden box) that spawns your personal Base Companion NPC when placed.
+
+
+
 
                         ////////*********[ Night Lantern ]***********///////
 
@@ -46,6 +61,9 @@
 /lantern global — (Requires nightlantern.global or Admin) Toggles automatic night lighting on or off across the entire server.
 
 /lantern scan — (Requires nightlantern.global or Admin) Rescans the map for all matching light deployables (Jack O' Lanterns, Tuna Can Lamps, Lanterns, Chinese Lanterns, and Cursed Cauldrons) and updates their state based on the current time of day.
+
+
+
 
                         ////////*********[ RGB Controller ]***********///////
 
