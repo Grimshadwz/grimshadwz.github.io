@@ -6,15 +6,20 @@ using Oxide.Game.Rust.Cui;
 
 namespace Oxide.Plugins
 {
-    [Info("ArmedFlatbed", "Paradox Studios", "3.4.0")]
-    [Description("Builds a custom armed flatbed with CUI dashboard controls, Tier 3 workbench aura, campfire water purifier, recycler, siren, lights, mini fridge, auto turret, and full restart persistence.")]
+    [Info("ArmedFlatbed", "Paradox Studios", "3.5.0")]
+    [Description("Builds a custom armed flatbed with CUI dashboard controls, 144-slot paged storage box, Tier 3 workbench aura, campfire water purifier, recycler, siren, lights, mini fridge, auto turret, and full restart persistence.")]
     public class ArmedFlatbed : RustPlugin
     {
         private const string PermUse = "armedflatbed.use";
         private const string UiName = "ArmedFlatbed_ControlPanel";
+        private const string StoragePageUiName = "ArmedFlatbed_StoragePageUI";
         private const string FlatbedDataFile = "ArmedFlatbedData";
         private const string TurretDataFile = "ArmedFlatbed_Turrets";
+        private const string StorageDataFile = "ArmedFlatbed_Storage";
         private const ulong ArmedCarSkinTag = 99887766;
+
+        private const int StorageTotalPages = 3;
+        private const int StorageSlotsPerPage = 48;
 
         // =========================================================================
         // EASY POSITION & ROTATION ADJUSTMENTS (X = Left/Right, Y = Up/Down, Z = Front/Back)
@@ -96,6 +101,10 @@ namespace Oxide.Plugins
         private readonly Dictionary<ulong, FlatbedSaveData> _flatbedSaveData = new Dictionary<ulong, FlatbedSaveData>();
         private Dictionary<uint, SavedTurretData> _savedTurrets = new Dictionary<uint, SavedTurretData>();
 
+        private Dictionary<uint, PagedStorageData> _pagedStorage = new Dictionary<uint, PagedStorageData>();
+        private readonly Dictionary<ulong, uint> _playerLootingCar = new Dictionary<ulong, uint>();
+        private readonly Dictionary<uint, ulong> _boxActiveLooter = new Dictionary<uint, ulong>();
+
         private class FlatbedSaveData
         {
             public ulong CarId;
@@ -114,6 +123,12 @@ namespace Oxide.Plugins
             public List<SavedItemData> Items = new List<SavedItemData>();
         }
 
+        private class PagedStorageData
+        {
+            public int ActivePage = 0;
+            public Dictionary<int, List<SavedItemData>> Pages = new Dictionary<int, List<SavedItemData>>();
+        }
+
         private class SavedItemData
         {
             public string Shortname;
@@ -121,14 +136,18 @@ namespace Oxide.Plugins
             public int Slot;
             public ulong Skin;
             public float Condition;
+            public float MaxCondition;
+            public string Text;
             public string AmmoType;
             public int AmmoCount;
+            public List<SavedItemData> Contents = new List<SavedItemData>();
         }
         private void Init()
         {
             permission.RegisterPermission(PermUse, this);
             LoadFlatbedData();
             _savedTurrets = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<uint, SavedTurretData>>(TurretDataFile) ?? new Dictionary<uint, SavedTurretData>();
+            _pagedStorage = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<uint, PagedStorageData>>(StorageDataFile) ?? new Dictionary<uint, PagedStorageData>();
         }
 
         private void OnEntitySpawned(BaseNetworkable entity)
@@ -146,81 +165,76 @@ namespace Oxide.Plugins
                 }
             }
         }
+
         private Timer _turretAiTimer;
-
-
         private Timer _powerRefreshTimer;
 
-    private void SetTruckDevicePower(IOEntity device, bool turnOn)
-    {
-        if (device == null || device.IsDestroyed) return;
-
-        bool hasInput = device.inputs != null && device.inputs.Length > 0;
-
-    if (device is AutoTurret turret)
-    {
-        if (turnOn)
+        private void SetTruckDevicePower(IOEntity device, bool turnOn)
         {
-            turret.flags |= BaseEntity.Flags.Reserved8;
-            if (hasInput) turret.UpdateFromInput(100, 0);
-            if (!turret.IsOnline()) turret.InitiateStartup();
-        }
-        else
-        {
-            turret.flags &= ~BaseEntity.Flags.Reserved8;
-            if (hasInput) turret.UpdateFromInput(0, 0);
-            if (turret.IsOnline()) turret.SetIsOnline(false);
-        }
-        turret.SendNetworkUpdateImmediate();
-        return;
-    }
+            if (device == null || device.IsDestroyed) return;
 
-    if (turnOn)
-    {
-        device.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-        if (hasInput) device.UpdateFromInput(100, 0);
-    }
-    else
-    {
-        device.flags &= ~(BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-        if (hasInput) device.UpdateFromInput(0, 0);
-    }
-    device.SendNetworkUpdateImmediate();
-}
+            bool hasInput = device.inputs != null && device.inputs.Length > 0;
 
-
-private void RefreshTruckPower()
-{
-    foreach (var car in BaseNetworkable.serverEntities.OfType<ModularCar>())
-    {
-        if (car == null || car.IsDestroyed || !IsArmedFlatbed(car)) continue;
-
-        // Clean up any leftover visible generators from earlier builds
-        foreach (var oldGen in car.GetComponentsInChildren<ElectricGenerator>(true).ToList())
-        {
-            if (oldGen != null && !oldGen.IsDestroyed) oldGen.Kill();
-        }
-
-        // Keep lights, siren, and fridge powered if their ON flag is set
-        foreach (var ioEnt in car.children.OfType<IOEntity>())
-        {
-            if (ioEnt == null || ioEnt.IsDestroyed || ioEnt is ElectricSwitch || ioEnt is AutoTurret) continue;
-            if (ioEnt.HasFlag(BaseEntity.Flags.On))
+            if (device is AutoTurret turret)
             {
-                SetTruckDevicePower(ioEnt, true);
+                if (turnOn)
+                {
+                    turret.flags |= BaseEntity.Flags.Reserved8;
+                    if (hasInput) turret.UpdateFromInput(100, 0);
+                    if (!turret.IsOnline()) turret.InitiateStartup();
+                }
+                else
+                {
+                    turret.flags &= ~BaseEntity.Flags.Reserved8;
+                    if (hasInput) turret.UpdateFromInput(0, 0);
+                    if (turret.IsOnline()) turret.SetIsOnline(false);
+                }
+                turret.SendNetworkUpdateImmediate();
+                return;
+            }
+
+            if (turnOn)
+            {
+                device.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
+                if (hasInput) device.UpdateFromInput(100, 0);
+            }
+            else
+            {
+                device.flags &= ~(BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
+                if (hasInput) device.UpdateFromInput(0, 0);
+            }
+            device.SendNetworkUpdateImmediate();
+        }
+
+        private void RefreshTruckPower()
+        {
+            foreach (var car in BaseNetworkable.serverEntities.OfType<ModularCar>())
+            {
+                if (car == null || car.IsDestroyed || !IsArmedFlatbed(car)) continue;
+
+                foreach (var oldGen in car.GetComponentsInChildren<ElectricGenerator>(true).ToList())
+                {
+                    if (oldGen != null && !oldGen.IsDestroyed) oldGen.Kill();
+                }
+
+                foreach (var ioEnt in car.children.OfType<IOEntity>())
+                {
+                    if (ioEnt == null || ioEnt.IsDestroyed || ioEnt is ElectricSwitch || ioEnt is AutoTurret) continue;
+                    if (ioEnt.HasFlag(BaseEntity.Flags.On))
+                    {
+                        SetTruckDevicePower(ioEnt, true);
+                    }
+                }
+
+                var turret = car.children.OfType<AutoTurret>().FirstOrDefault();
+                if (turret != null && !turret.IsDestroyed)
+                {
+                    var sw = car.children.OfType<ElectricSwitch>().FirstOrDefault();
+                    bool shouldBeOn = sw != null ? sw.IsOn() : turret.IsOnline();
+                    SetTruckDevicePower(turret, shouldBeOn);
+                }
             }
         }
-
-        // Keep turret powered if its switch is ON (and leave it OFF if switch is OFF for reloading)
-        var turret = car.children.OfType<AutoTurret>().FirstOrDefault();
-        if (turret != null && !turret.IsDestroyed)
-        {
-            var sw = car.children.OfType<ElectricSwitch>().FirstOrDefault();
-            bool shouldBeOn = sw != null ? sw.IsOn() : turret.IsOnline();
-            SetTruckDevicePower(turret, shouldBeOn);
-        }
-    }
-}
 
         private void OnServerInitialized()
         {
@@ -232,20 +246,13 @@ private void RefreshTruckPower()
 
                     RestoreArmedFlatbedAfterRestart(car);
                     BoostTruckEnginePower(car);
-
                 }
             });
 
             _workbenchCheckTimer = timer.Every(1.0f, UpdateVirtualWorkbenchAura);
             _turretAiTimer = timer.Every(0.5f, UpdateTruckTurretNpcTargets);
             _powerRefreshTimer = timer.Every(15f, RefreshTruckPower);
-            
-
-
-            
         }
-      
-        
 
         private void OnServerSave()
         {
@@ -253,8 +260,16 @@ private void RefreshTruckPower()
             foreach (var car in BaseNetworkable.serverEntities.OfType<ModularCar>())
             {
                 if (car == null || car.IsDestroyed || !IsArmedFlatbed(car)) continue;
+                uint carId = (uint)car.net.ID.Value;
                 car.skinID = ArmedCarSkinTag;
                 CaptureFlatbedState(car);
+
+                var woodBox = GetTruckWoodBox(car);
+                if (woodBox != null && woodBox.inventory != null)
+                {
+                    var pData = GetOrCreatePagedStorage(carId);
+                    pData.Pages[pData.ActivePage] = SerializeContainer(woodBox.inventory);
+                }
 
                 var turret = car.GetComponentInChildren<AutoTurret>();
                 if (turret != null && turret.inventory != null)
@@ -266,30 +281,15 @@ private void RefreshTruckPower()
 
                     foreach (var item in turret.inventory.itemList)
                     {
-                        var itemData = new SavedItemData
-                        {
-                            Shortname = item.info.shortname,
-                            Amount = item.amount,
-                            Slot = item.position,
-                            Skin = item.skin,
-                            Condition = item.condition
-                        };
-
-                        var held = item.GetHeldEntity() as BaseProjectile;
-                        if (held != null && held.primaryMagazine != null)
-                        {
-                            itemData.AmmoType = held.primaryMagazine.ammoType?.shortname;
-                            itemData.AmmoCount = held.primaryMagazine.contents;
-                        }
-
-                        data.Items.Add(itemData);
+                        data.Items.Add(SerializeItem(item));
                     }
 
-                    _savedTurrets[(uint)car.net.ID.Value] = data;
+                    _savedTurrets[carId] = data;
                 }
             }
 
             Interface.Oxide.DataFileSystem.WriteObject(TurretDataFile, _savedTurrets);
+            SavePagedStorageData();
         }
         private void RestoreArmedFlatbedAfterRestart(ModularCar car)
         {
@@ -303,6 +303,20 @@ private void RefreshTruckPower()
                     continue;
 
                 StripPhysicsAndStability(child);
+
+                if (child is StorageContainer sc && sc.ShortPrefabName.Contains("box.wooden.large"))
+                {
+                    sc.inventory.capacity = StorageSlotsPerPage;
+                    var pData = GetOrCreatePagedStorage(id);
+                    if (pData.Pages.ContainsKey(pData.ActivePage))
+                    {
+                        LoadPageIntoBox(sc, pData.Pages[pData.ActivePage]);
+                    }
+                    else
+                    {
+                        pData.Pages[pData.ActivePage] = SerializeContainer(sc.inventory);
+                    }
+                }
 
                 if (child is WaterPurifier || child.ShortPrefabName.Contains("purifier"))
                 {
@@ -360,31 +374,20 @@ private void RefreshTruckPower()
                         foreach (var authId in tData.AuthorizedPlayers)
                             turret.authorizedPlayers.Add(authId);
 
-                        // 1. Restore the weapon in slot 0 FIRST and attach it
                         foreach (var savedItem in tData.Items.Where(x => x.Slot == 0))
                         {
-                            var restored = ItemManager.CreateByName(savedItem.Shortname, savedItem.Amount, savedItem.Skin);
+                            var restored = DeserializeItem(savedItem);
                             if (restored != null)
                             {
-                                restored.condition = savedItem.Condition;
                                 restored.MoveToContainer(turret.inventory, 0);
-
-                                var held = restored.GetHeldEntity() as BaseProjectile;
-                                if (held != null && held.primaryMagazine != null && !string.IsNullOrEmpty(savedItem.AmmoType))
-                                {
-                                    var ammoDef = ItemManager.FindItemDefinition(savedItem.AmmoType);
-                                    if (ammoDef != null) held.primaryMagazine.ammoType = ammoDef;
-                                    held.primaryMagazine.contents = savedItem.AmmoCount;
-                                }
                             }
                         }
 
                         turret.UpdateAttachedWeapon();
 
-                        // 2. Restore reserve ammo into slots 1-6 AFTER the weapon is attached
                         foreach (var savedItem in tData.Items.Where(x => x.Slot > 0))
                         {
-                            var restoredAmmo = ItemManager.CreateByName(savedItem.Shortname, savedItem.Amount, savedItem.Skin);
+                            var restoredAmmo = DeserializeItem(savedItem);
                             if (restoredAmmo != null)
                             {
                                 if (!restoredAmmo.MoveToContainer(turret.inventory, savedItem.Slot))
@@ -396,7 +399,6 @@ private void RefreshTruckPower()
 
                         turret.UpdateTotalAmmo();
                     }
-
                     else if (car.OwnerID != 0)
                     {
                         turret.authorizedPlayers.Add(car.OwnerID);
@@ -441,6 +443,7 @@ private void RefreshTruckPower()
                 EnsureHiddenWorkbenchTrigger(car, true);
             }
         }
+
         private void Unload()
         {
             _workbenchCheckTimer?.Destroy();
@@ -448,6 +451,7 @@ private void RefreshTruckPower()
             foreach (var player in BasePlayer.activePlayerList)
             {
                 CuiHelper.DestroyUi(player, UiName);
+                CuiHelper.DestroyUi(player, StoragePageUiName);
                 if (_playersWithTruckT3.Contains(player.userID))
                 {
                     player.cachedCraftLevel = 0f;
@@ -471,12 +475,324 @@ private void RefreshTruckPower()
             _pendingBagRespawnCar.Clear();
             _t3WorkbenchActiveCars.Clear();
             _playersWithTruckT3.Clear();
+            _playerLootingCar.Clear();
+            _boxActiveLooter.Clear();
             _turretAiTimer?.Destroy();
             _powerRefreshTimer?.Destroy();
-           
+        }
+        // =========================================================================
+        // 144-SLOT PAGED STORAGE LOGIC & UI (3 PAGES x 48 SLOTS)
+        // =========================================================================
 
+        private StorageContainer GetTruckWoodBox(ModularCar car)
+        {
+            if (car == null || car.IsDestroyed) return null;
+            return car.children.OfType<StorageContainer>()
+                .FirstOrDefault(s => s != null && !s.IsDestroyed && s.ShortPrefabName.Contains("box.wooden.large"));
         }
 
+        private PagedStorageData GetOrCreatePagedStorage(uint carId)
+        {
+            PagedStorageData data;
+            if (!_pagedStorage.TryGetValue(carId, out data) || data == null)
+            {
+                data = new PagedStorageData();
+                _pagedStorage[carId] = data;
+            }
+            if (data.Pages == null)
+            {
+                data.Pages = new Dictionary<int, List<SavedItemData>>();
+            }
+            for (int i = 0; i < StorageTotalPages; i++)
+            {
+                if (!data.Pages.ContainsKey(i) || data.Pages[i] == null)
+                {
+                    data.Pages[i] = new List<SavedItemData>();
+                }
+            }
+            if (data.ActivePage < 0 || data.ActivePage >= StorageTotalPages)
+            {
+                data.ActivePage = 0;
+            }
+            return data;
+        }
+
+        private void SavePagedStorageData()
+        {
+            Interface.Oxide.DataFileSystem.WriteObject(StorageDataFile, _pagedStorage);
+        }
+
+        private void OnLootEntity(BasePlayer player, BaseEntity entity)
+        {
+            if (player == null || entity == null) return;
+            var box = entity as StorageContainer;
+            if (box == null || !box.ShortPrefabName.Contains("box.wooden.large")) return;
+
+            var car = box.GetComponentInParent<ModularCar>();
+            if (car == null || !IsArmedFlatbed(car)) return;
+
+            uint carId = (uint)car.net.ID.Value;
+            var pData = GetOrCreatePagedStorage(carId);
+
+            if (box.inventory != null && box.inventory.capacity != StorageSlotsPerPage)
+            {
+                box.inventory.capacity = StorageSlotsPerPage;
+            }
+
+            _playerLootingCar[player.userID] = carId;
+            _boxActiveLooter[carId] = player.userID;
+
+            ShowStoragePageUi(player, pData.ActivePage);
+        }
+
+        private void OnLootEntityEnd(BasePlayer player, BaseCombatEntity entity)
+        {
+            if (player == null) return;
+
+            CuiHelper.DestroyUi(player, StoragePageUiName);
+
+            uint carId;
+            if (_playerLootingCar.TryGetValue(player.userID, out carId))
+            {
+                _playerLootingCar.Remove(player.userID);
+
+                ulong activeLooter;
+                if (_boxActiveLooter.TryGetValue(carId, out activeLooter) && activeLooter == player.userID)
+                {
+                    _boxActiveLooter.Remove(carId);
+                }
+
+                var car = BaseNetworkable.serverEntities.Find(new NetworkableId(carId)) as ModularCar;
+                var box = GetTruckWoodBox(car);
+                if (box != null && box.inventory != null)
+                {
+                    var pData = GetOrCreatePagedStorage(carId);
+                    pData.Pages[pData.ActivePage] = SerializeContainer(box.inventory);
+                    SavePagedStorageData();
+                }
+            }
+        }
+
+        private void ShowStoragePageUi(BasePlayer player, int activePage)
+        {
+            CuiHelper.DestroyUi(player, StoragePageUiName);
+
+            var elements = new CuiElementContainer();
+
+            // Centered directly under the 6-column storage grid
+            elements.Add(new CuiPanel
+            {
+                Image = { Color = "0.10 0.11 0.13 0.94" },
+                RectTransform = { AnchorMin = "0.689 0.138", AnchorMax = "0.909 0.165" }
+            }, "Overlay", StoragePageUiName);
+
+            elements.Add(new CuiButton
+            {
+                Button = { Command = "armedflatbed.boxpage prev", Color = "0.24 0.46 0.68 0.95" },
+                RectTransform = { AnchorMin = "0.02 0.14", AnchorMax = "0.21 0.86" },
+                Text = { Text = "< PREV", FontSize = 9, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+            }, StoragePageUiName);
+
+            elements.Add(new CuiLabel
+            {
+                Text = { Text = $"PAGE {activePage + 1} / {StorageTotalPages} (144 SLOTS)", FontSize = 9, Align = TextAnchor.MiddleCenter, Color = "0.95 0.95 0.95 1" },
+                RectTransform = { AnchorMin = "0.22 0.05", AnchorMax = "0.78 0.95" }
+            }, StoragePageUiName);
+
+            elements.Add(new CuiButton
+            {
+                Button = { Command = "armedflatbed.boxpage next", Color = "0.24 0.46 0.68 0.95" },
+                RectTransform = { AnchorMin = "0.79 0.14", AnchorMax = "0.98 0.86" },
+                Text = { Text = "NEXT >", FontSize = 9, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+            }, StoragePageUiName);
+
+            CuiHelper.AddUi(player, elements);
+        }
+
+
+
+
+
+
+
+        [ConsoleCommand("armedflatbed.boxpage")]
+        private void ConsoleBoxPageAction(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+
+            uint carId;
+            if (!_playerLootingCar.TryGetValue(player.userID, out carId))
+            {
+                CuiHelper.DestroyUi(player, StoragePageUiName);
+                return;
+            }
+
+            var car = BaseNetworkable.serverEntities.Find(new NetworkableId(carId)) as ModularCar;
+            var box = GetTruckWoodBox(car);
+            if (box == null || box.inventory == null)
+            {
+                CuiHelper.DestroyUi(player, StoragePageUiName);
+                _playerLootingCar.Remove(player.userID);
+                return;
+            }
+
+            if (box.inventory.entityOwner != null)
+            {
+                var otherLooters = BasePlayer.activePlayerList.Where(p => p != null && p != player && p.inventory?.loot?.entitySource == box).ToList();
+                if (otherLooters.Count > 0)
+                {
+                    player.ChatMessage("Cannot switch pages while another player is viewing this storage box.");
+                    return;
+                }
+            }
+
+            string dir = arg.GetString(0, "next");
+            var pData = GetOrCreatePagedStorage(carId);
+
+            pData.Pages[pData.ActivePage] = SerializeContainer(box.inventory);
+
+            int newPage = pData.ActivePage;
+            if (dir == "prev")
+            {
+                newPage = (pData.ActivePage - 1 + StorageTotalPages) % StorageTotalPages;
+            }
+            else
+            {
+                newPage = (pData.ActivePage + 1) % StorageTotalPages;
+            }
+
+            pData.ActivePage = newPage;
+
+            LoadPageIntoBox(box, pData.Pages[newPage]);
+            SavePagedStorageData();
+
+            ShowStoragePageUi(player, newPage);
+        }
+        private void LoadPageIntoBox(StorageContainer box, List<SavedItemData> items)
+        {
+            if (box == null || box.inventory == null) return;
+
+            for (int i = box.inventory.itemList.Count - 1; i >= 0; i--)
+            {
+                var existing = box.inventory.itemList[i];
+                existing.RemoveFromContainer();
+                existing.Remove();
+            }
+
+            box.inventory.capacity = StorageSlotsPerPage;
+
+            if (items != null)
+            {
+                foreach (var sItem in items)
+                {
+                    var restored = DeserializeItem(sItem);
+                    if (restored != null)
+                    {
+                        if (!restored.MoveToContainer(box.inventory, sItem.Slot))
+                        {
+                            restored.MoveToContainer(box.inventory);
+                        }
+                    }
+                }
+            }
+
+            box.inventory.MarkDirty();
+            box.SendNetworkUpdateImmediate();
+        }
+
+        private List<SavedItemData> SerializeContainer(ItemContainer container)
+        {
+            var list = new List<SavedItemData>();
+            if (container == null) return list;
+
+            foreach (var item in container.itemList)
+            {
+                if (item == null) continue;
+                list.Add(SerializeItem(item));
+            }
+            return list;
+        }
+
+        private SavedItemData SerializeItem(Item item)
+        {
+            var data = new SavedItemData
+            {
+                Shortname = item.info.shortname,
+                Amount = item.amount,
+                Slot = item.position,
+                Skin = item.skin,
+                Condition = item.condition,
+                MaxCondition = item.maxCondition,
+                Text = item.text
+            };
+
+            var held = item.GetHeldEntity() as BaseProjectile;
+            if (held != null && held.primaryMagazine != null)
+            {
+                data.AmmoType = held.primaryMagazine.ammoType?.shortname;
+                data.AmmoCount = held.primaryMagazine.contents;
+            }
+
+            if (item.contents != null && item.contents.itemList.Count > 0)
+            {
+                foreach (var childItem in item.contents.itemList)
+                {
+                    if (childItem != null)
+                    {
+                        data.Contents.Add(SerializeItem(childItem));
+                    }
+                }
+            }
+
+            return data;
+        }
+
+        private Item DeserializeItem(SavedItemData data)
+        {
+            if (data == null || string.IsNullOrEmpty(data.Shortname)) return null;
+
+            var item = ItemManager.CreateByName(data.Shortname, data.Amount, data.Skin);
+            if (item == null) return null;
+
+            if (data.MaxCondition > 0f)
+            {
+                item.maxCondition = data.MaxCondition;
+            }
+            if (data.Condition > 0f)
+            {
+                item.condition = data.Condition;
+            }
+            if (!string.IsNullOrEmpty(data.Text))
+            {
+                item.text = data.Text;
+            }
+
+            var held = item.GetHeldEntity() as BaseProjectile;
+            if (held != null && held.primaryMagazine != null && !string.IsNullOrEmpty(data.AmmoType))
+            {
+                var ammoDef = ItemManager.FindItemDefinition(data.AmmoType);
+                if (ammoDef != null) held.primaryMagazine.ammoType = ammoDef;
+                held.primaryMagazine.contents = data.AmmoCount;
+            }
+
+            if (data.Contents != null && data.Contents.Count > 0 && item.contents != null)
+            {
+                foreach (var childData in data.Contents)
+                {
+                    var childItem = DeserializeItem(childData);
+                    if (childItem != null)
+                    {
+                        if (!childItem.MoveToContainer(item.contents, childData.Slot))
+                        {
+                            childItem.MoveToContainer(item.contents);
+                        }
+                    }
+                }
+            }
+
+            return item;
+        }
         private void EnsureHiddenWorkbenchTrigger(ModularCar car, bool enable)
         {
             if (car == null || car.IsDestroyed) return;
@@ -645,11 +961,9 @@ private void RefreshTruckPower()
         {
             if (entity == null) return true;
 
-            // Block real players (non-NPC BasePlayer)
             if (entity is BasePlayer player && !player.IsNpc && !(entity is NPCPlayer))
                 return true;
 
-            // Block Horses and Cows
             if (entity is RidableHorse ||
                 entity.ShortPrefabName.Contains("horse") ||
                 entity.ShortPrefabName.Contains("cow") ||
@@ -679,9 +993,6 @@ private void RefreshTruckPower()
 
             return null;
         }
-
-
-        
         private string GetDeployablePrefab(string itemShortname)
         {
             var itemDef = ItemManager.FindItemDefinition(itemShortname);
@@ -796,98 +1107,91 @@ private void RefreshTruckPower()
             }
             return null;
         }
-// 11/14/2026 - Updated this to completely remove decay issues with the custom flatbed as well as the vehicle it's self.
+
         private object OnEntityTakeDamage(BaseCombatEntity entity, HitInfo info)
-{
-    if (entity == null || info == null) return null;
-
-    var car = entity as ModularCar ?? entity.GetComponentInParent<ModularCar>();
-    if (car != null && IsArmedFlatbed(car))
-    {
-        // Cancel all damage and decay on the car, its modules, and all flatbed items
-        info.damageTypes.Clear();
-        return true;
-    }
-
-    return null;
-}
-// 11/14/2026 - Updated this to add full health restoration for the truck, its modules, and all attached items.
-    private void RestoreTruckFullHealth(ModularCar car)
-{
-    if (car == null || car.IsDestroyed) return;
-
-    car.SetHealth(car.MaxHealth());
-
-    foreach (var mod in car.AttachedModuleEntities)
-    {
-        if (mod != null && !mod.IsDestroyed)
-            mod.SetHealth(mod.MaxHealth());
-    }
-
-    foreach (var child in car.GetComponentsInChildren<BaseCombatEntity>(true))
-    {
-        if (child != null && !child.IsDestroyed)
-            child.SetHealth(child.MaxHealth());
-    }
-}
-
-    private void OnEngineLoadoutChanged(VehicleModuleEngine engineMod)
-{
-    if (engineMod == null || engineMod.IsDestroyed) return;
-    var car = engineMod.GetComponentInParent<ModularCar>();
-    if (car != null && IsArmedFlatbed(car))
-    {
-        NextTick(() => BoostTruckEnginePower(car));
-    }
-}
-
-
-// 11/14/2026 - Updated this to add more power to the engine so that the truck can climb rough terrain better / easier.
-    private void BoostTruckEnginePower(ModularCar car, float multiplier = 2.0f)
-{
-    if (car == null || car.IsDestroyed || !IsArmedFlatbed(car)) return;
-
-    foreach (var module in car.AttachedModuleEntities)
-    {
-        var engineMod = module as VehicleModuleEngine;
-        if (engineMod == null || engineMod.IsDestroyed || engineMod.engine == null) continue;
-
-        if (engineMod.engine.engineKW > 0 && engineMod.engine.engineKW < 120)
         {
-            engineMod.engine.engineKW = Mathf.RoundToInt(engineMod.engine.engineKW * multiplier);
-            engineMod.SendNetworkUpdateImmediate();
+            if (entity == null || info == null) return null;
+
+            var car = entity as ModularCar ?? entity.GetComponentInParent<ModularCar>();
+            if (car != null && IsArmedFlatbed(car))
+            {
+                info.damageTypes.Clear();
+                return true;
+            }
+
+            return null;
         }
-    }
-}
 
-private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.EngineStorage engineStorage)
-{
-    if (engineMod == null || engineMod.IsDestroyed) return;
+        private void RestoreTruckFullHealth(ModularCar car)
+        {
+            if (car == null || car.IsDestroyed) return;
 
-    var car = engineMod.GetComponentInParent<ModularCar>();
-    if (car != null && IsArmedFlatbed(car))
-    {
-        BoostTruckEnginePower(car);
-    }
-}
+            car.SetHealth(car.MaxHealth());
 
+            foreach (var mod in car.AttachedModuleEntities)
+            {
+                if (mod != null && !mod.IsDestroyed)
+                    mod.SetHealth(mod.MaxHealth());
+            }
 
+            foreach (var child in car.GetComponentsInChildren<BaseCombatEntity>(true))
+            {
+                if (child != null && !child.IsDestroyed)
+                    child.SetHealth(child.MaxHealth());
+            }
+        }
+        private void OnEngineLoadoutChanged(VehicleModuleEngine engineMod)
+        {
+            if (engineMod == null || engineMod.IsDestroyed) return;
+            var car = engineMod.GetComponentInParent<ModularCar>();
+            if (car != null && IsArmedFlatbed(car))
+            {
+                NextTick(() => BoostTruckEnginePower(car));
+            }
+        }
 
-// 11/14/2026 - Updated this to add full constat power to the turret from the truck. Switch will turn the turret on/off and keep it fully powered when on.
-    private void OnSwitchToggle(ElectricSwitch electricSwitch, BasePlayer player)
-    {
-        if (electricSwitch == null || electricSwitch.IsDestroyed) return;
-        var car = electricSwitch.GetComponentInParent<ModularCar>();
-        if (car == null || !IsArmedFlatbed(car)) return;
+        private void BoostTruckEnginePower(ModularCar car, float multiplier = 2.0f)
+        {
+            if (car == null || car.IsDestroyed || !IsArmedFlatbed(car)) return;
 
-    NextTick(() =>
-    {
-        if (electricSwitch == null || electricSwitch.IsDestroyed || car == null || car.IsDestroyed) return;
-        var turret = car.children.OfType<AutoTurret>().FirstOrDefault();
-        if (turret != null) SetTruckDevicePower(turret, electricSwitch.IsOn());
-        CaptureFlatbedState(car);
-    });
-}
+            foreach (var module in car.AttachedModuleEntities)
+            {
+                var engineMod = module as VehicleModuleEngine;
+                if (engineMod == null || engineMod.IsDestroyed || engineMod.engine == null) continue;
+
+                if (engineMod.engine.engineKW > 0 && engineMod.engine.engineKW < 120)
+                {
+                    engineMod.engine.engineKW = Mathf.RoundToInt(engineMod.engine.engineKW * multiplier);
+                    engineMod.SendNetworkUpdateImmediate();
+                }
+            }
+        }
+
+        private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.EngineStorage engineStorage)
+        {
+            if (engineMod == null || engineMod.IsDestroyed) return;
+
+            var car = engineMod.GetComponentInParent<ModularCar>();
+            if (car != null && IsArmedFlatbed(car))
+            {
+                BoostTruckEnginePower(car);
+            }
+        }
+
+        private void OnSwitchToggle(ElectricSwitch electricSwitch, BasePlayer player)
+        {
+            if (electricSwitch == null || electricSwitch.IsDestroyed) return;
+            var car = electricSwitch.GetComponentInParent<ModularCar>();
+            if (car == null || !IsArmedFlatbed(car)) return;
+
+            NextTick(() =>
+            {
+                if (electricSwitch == null || electricSwitch.IsDestroyed || car == null || car.IsDestroyed) return;
+                var turret = car.children.OfType<AutoTurret>().FirstOrDefault();
+                if (turret != null) SetTruckDevicePower(turret, electricSwitch.IsOn());
+                CaptureFlatbedState(car);
+            });
+        }
 
         private bool IsArmedFlatbed(ModularCar car)
         {
@@ -948,6 +1252,7 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
                 }
             }
         }
+
         private void OnItemAddedToContainer(ItemContainer container, Item item)
         {
             if (container?.entityOwner == null || item == null) return;
@@ -1013,11 +1318,10 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
             purifier.SendNetworkUpdateImmediate();
         }
 
-         private void PowerUpIoDevice(IOEntity ioEnt, bool turnOn)
+        private void PowerUpIoDevice(IOEntity ioEnt, bool turnOn)
         {
             SetTruckDevicePower(ioEnt, turnOn);
-        }      
-
+        }
         [ChatCommand("removebed")]
         private void CmdRemoveBed(BasePlayer player, string command, string[] args)
         {
@@ -1028,6 +1332,9 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
             car.skinID = 0;
             _t3WorkbenchActiveCars.Remove(carId);
             _savedTurrets.Remove(carId);
+            _pagedStorage.Remove(carId);
+            _boxActiveLooter.Remove(carId);
+            SavePagedStorageData();
             RemoveFlatbedState(car);
             EnsureHiddenWorkbenchTrigger(car, false);
 
@@ -1072,6 +1379,7 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
 
             UpdateVirtualWorkbenchAura();
             CuiHelper.DestroyUi(player, UiName);
+            CuiHelper.DestroyUi(player, StoragePageUiName);
             player.ChatMessage(removed > 0 ? "Removed custom flatbed build from truck." : "No custom flatbed found on this truck.");
         }
 
@@ -1117,6 +1425,9 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
             BoostTruckEnginePower(car);
 
             uint carId = (uint)car.net.ID.Value;
+            GetOrCreatePagedStorage(carId);
+            SavePagedStorageData();
+
             _t3WorkbenchActiveCars.Add(carId);
             EnsureHiddenWorkbenchTrigger(car, true);
             CaptureFlatbedState(car);
@@ -1125,7 +1436,7 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
             OnServerSave();
             timer.Once(1.0f, () => SaveRestore.Save(true));
 
-            player.ChatMessage("Custom 3-slot armed flatbed built! Use /truckui anytime to control fuel, storage, T3 crafting, lights, siren, fridge, and turret.");
+            player.ChatMessage("Custom 3-slot armed flatbed built! Use /truckui anytime to control fuel, 144-slot storage, T3 crafting, lights, siren, fridge, and turret.");
         }
 
         [ChatCommand("truckui")]
@@ -1193,8 +1504,7 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
                 case "storage":
                     CuiHelper.DestroyUi(player, UiName);
                     _activeUiCar.Remove(player.userID);
-                    var woodBox = car.children.OfType<StorageContainer>()
-                        .FirstOrDefault(s => s != null && s.ShortPrefabName.Contains("box.wooden.large"));
+                    var woodBox = GetTruckWoodBox(car);
                     if (woodBox != null)
                         woodBox.PlayerOpenLoot(player, "", false);
                     else
@@ -1256,14 +1566,12 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
                     bool turnOn = electricSwitch != null ? !electricSwitch.IsOn() : (turret != null && !turret.IsOnline());
                     if (electricSwitch != null)
                     {
-                    electricSwitch.SetSwitch(turnOn);
-                    electricSwitch.SendNetworkUpdateImmediate();
+                        electricSwitch.SetSwitch(turnOn);
+                        electricSwitch.SendNetworkUpdateImmediate();
                     }
                     if (turret != null) SetTruckDevicePower(turret, turnOn);
                     CaptureFlatbedState(car);
                     break;
-
-
             }
 
             ShowTruckUi(player, car);
@@ -1325,7 +1633,7 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
             {
                 Button = { Command = "armedflatbed.ui storage", Color = "0.24 0.46 0.68 0.95" },
                 RectTransform = { AnchorMin = "0.52 0.79", AnchorMax = "0.94 0.87" },
-                Text = { Text = "OPEN WOOD BOX", FontSize = 11, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+                Text = { Text = "OPEN WOOD BOX (144)", FontSize = 11, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
             }, UiName);
 
             elements.Add(new CuiButton
@@ -1428,6 +1736,7 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
                 StripPhysicsAndStability(box);
                 box.OwnerID = ownerId;
                 box.Spawn();
+                box.inventory.capacity = StorageSlotsPerPage;
                 box.SetParent(car, worldPositionStays: false);
                 box.transform.localPosition = BoxLocalPos;
                 box.transform.localRotation = Quaternion.Euler(BoxLocalRot);
@@ -1467,11 +1776,10 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
                     fridge.transform.localPosition = MiniFridgeLocalPos;
                     fridge.transform.localRotation = Quaternion.Euler(MiniFridgeLocalRot);
 
-                if (fridge is IOEntity fridgeIo)
-                    timer.Once(0.2f, () => SetTruckDevicePower(fridgeIo, true));
-                else
-                    fridge.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
-   
+                    if (fridge is IOEntity fridgeIo)
+                        timer.Once(0.2f, () => SetTruckDevicePower(fridgeIo, true));
+                    else
+                        fridge.flags |= (BaseEntity.Flags.On | BaseEntity.Flags.Reserved8);
 
                     fridge.SendNetworkUpdateImmediate();
                 }
@@ -1577,7 +1885,6 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
 
                         var capturedLight = sLight;
                         timer.Once(0.2f, () => SetTruckDevicePower(capturedLight, true));
-                        
                     }
                 }
             }
@@ -1612,14 +1919,14 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
             if (turret != null && electricSwitch != null)
             {
                 timer.Once(0.2f, () =>
-             {
-            if (turret == null || turret.IsDestroyed || electricSwitch == null || electricSwitch.IsDestroyed) return;
-            electricSwitch.SetSwitch(true);
-            electricSwitch.SendNetworkUpdateImmediate();
-            SetTruckDevicePower(turret, true);
-            });
+                {
+                    if (turret == null || turret.IsDestroyed || electricSwitch == null || electricSwitch.IsDestroyed) return;
+                    electricSwitch.SetSwitch(true);
+                    electricSwitch.SendNetworkUpdateImmediate();
+                    SetTruckDevicePower(turret, true);
+                });
             }
-        }  
+        }
         private void SpawnProp(ModularCar car, string prefab, Vector3 localPos, Quaternion localRot)
         {
             var prop = GameManager.server.CreateEntity(prefab, car.transform.position, car.transform.rotation);
@@ -1722,7 +2029,7 @@ private void OnEngineStatsRefreshed(VehicleModuleEngine engineMod, Rust.Modular.
             SaveFlatbedData();
         }
 
-                private void ApplySavedFlatbedState(ModularCar car, FlatbedSaveData state)
+        private void ApplySavedFlatbedState(ModularCar car, FlatbedSaveData state)
         {
             if (car == null || car.IsDestroyed) return;
 
