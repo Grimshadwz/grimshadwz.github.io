@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("NightSearchLights", "1320 Veteran", "2.1.1")]
+    [Info("NightSearchLights", "Paradox Studios", "1.0.0")]
     [Description("Auto-detects all wired and unwired Search Lights server-wide, turning them off by day and on at night.")]
     public class NightSearchLights : CovalencePlugin
     {
