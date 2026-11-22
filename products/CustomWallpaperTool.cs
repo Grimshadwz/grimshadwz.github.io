@@ -12,8 +12,8 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("CustomWallpaperTool", "Paradox Studios", "1.0.8")]
-    [Description("Dedicated Custom Wallpaper Tool (indestructible skinned Spray Can / /wallpaper) that applies Steam Workshop wallpapers to interior & exterior walls, floors, foundations, and ceilings, aligns floor/ceiling rotation cleanly, respects vanilla Wallpaper Tool overwrites/removals, prevents decay on custom wallpapers, and allows removing broken skins.")]
+    [Info("CustomWallpaperTool", "Paradox Studios", "1.1.1")]
+    [Description("Dedicated Custom Wallpaper Tool (indestructible skinned Spray Can / /wallpaper) that applies Steam Workshop wallpapers to interior & exterior walls, angled roofs, floors, foundations (top & vertical sides), and ceilings, aligns square (90°) and triangle (120°) floor/ceiling rotation cleanly, respects vanilla Wallpaper Tool overwrites/removals, prevents exterior stripping & decay on custom wallpapers, and allows removing broken skins.")]
     public class CustomWallpaperTool : RustPlugin
     {
         [PluginReference]
@@ -27,6 +27,7 @@ namespace Oxide.Plugins
         private StoredData _data;
         private readonly Dictionary<ulong, PlayerSession> _sessions = new Dictionary<ulong, PlayerSession>();
         private Timer _healTimer;
+        private Timer _exteriorGuardTimer;
         private bool _debugDecay;
 
         #region Data Models
@@ -127,11 +128,14 @@ namespace Oxide.Plugins
 
             ScanAndProtectExistingWallpapers();
             RestoreAndHealWallpapers();
+
+            _exteriorGuardTimer = timer.Every(1.0f, GuardExteriorWallpapers);
             _healTimer = timer.Every(15f, RestoreAndHealWallpapers);
         }
 
         private void Unload()
         {
+            _exteriorGuardTimer?.Destroy();
             _healTimer?.Destroy();
             SaveData();
             foreach (var player in BasePlayer.activePlayerList)
@@ -156,6 +160,24 @@ namespace Oxide.Plugins
             {
                 _data.ProtectedWallpapers.Remove(block.net.ID.Value);
             }
+        }
+
+        private void OnStructureUpgrade(BuildingBlock block, BasePlayer player, BuildingGrade.Enum grade)
+        {
+            if (block == null || block.net == null) return;
+            if (_data.ProtectedWallpapers.ContainsKey(block.net.ID.Value))
+            {
+                NextTick(() =>
+                {
+                    if (block != null && !block.IsDestroyed)
+                        HealBlockWallpapers(block);
+                });
+            }
+        }
+
+        private void OnEntityBuilt(Planner plan, GameObject go)
+        {
+            NextTick(GuardExteriorWallpapers);
         }
 
         private void OnLoseCondition(Item item, ref float amount)
@@ -226,8 +248,6 @@ namespace Oxide.Plugins
             var activeItem = player.GetActiveItem();
             if (activeItem == null) return;
 
-            // 1. If the player is holding the VANILLA Wallpaper Tool (wallpaper.tool) and clicks/uses it,
-            //    sync ProtectedWallpapers so vanilla placements or removals immediately unregister our custom protection!
             if (activeItem.info.shortname == "wallpaper.tool")
             {
                 if (input.WasJustPressed(BUTTON.FIRE_PRIMARY) || input.IsDown(BUTTON.FIRE_PRIMARY) ||
@@ -238,7 +258,6 @@ namespace Oxide.Plugins
                 return;
             }
 
-            // 2. Otherwise handle our Custom Wallpaper Tool
             if (!IsCustomWallpaperTool(activeItem))
                 return;
 
@@ -275,8 +294,6 @@ namespace Oxide.Plugins
             if (!_data.ProtectedWallpapers.ContainsKey(netId))
                 return;
 
-            // Check after the vanilla RPC processes (0.25s later): if the vanilla tool removed or replaced a wallpaper,
-            // drop our custom protection on that side so the heal timer never reverts the player's vanilla change!
             timer.Once(0.25f, () =>
             {
                 if (block == null || block.IsDestroyed || block.net == null) return;
@@ -313,12 +330,22 @@ namespace Oxide.Plugins
 
         #endregion
 
-        #region Floor, Foundation & Ceiling Rotation Alignment
+        #region Floor, Foundation, Roof & Ceiling Rotation Alignment
 
         private bool IsHorizontalSurface(BuildingBlock block)
         {
             string prefab = block.PrefabName;
             return prefab.Contains("foundation") || prefab.Contains("floor") || prefab.Contains("roof");
+        }
+
+        private bool IsTriangleSurface(BuildingBlock block)
+        {
+            return block.PrefabName.Contains("triangle");
+        }
+
+        private float GetRotationStep(BuildingBlock block)
+        {
+            return IsTriangleSurface(block) ? 120f : 90f;
         }
 
         private float CalculateVanillaFloorRotation(BasePlayer player, BuildingBlock block, float manualOffset)
@@ -331,13 +358,20 @@ namespace Oxide.Plugins
 
             Vector3 localLook = block.transform.InverseTransformDirection(lookForward);
             float rawAngle = Mathf.Atan2(localLook.x, localLook.z) * Mathf.Rad2Deg;
+
+            if (IsTriangleSurface(block))
+            {
+                float snappedTri = Mathf.Round(rawAngle / 120f) * 120f;
+                float triOffset = Mathf.Round(manualOffset / 120f) * 120f;
+                return Mathf.Repeat(snappedTri + triOffset, 360f);
+            }
+
             float snapped = Mathf.Round(rawAngle / 90f) * 90f;
             return Mathf.Repeat(snapped + manualOffset, 360f);
         }
 
         private void ApplyWallpaperWithRotation(BuildingBlock block, ulong skinId, int side, float rotation)
         {
-            block.RemoveWallpaper(side);
             block.SetWallpaper(skinId, side, rotation);
 
             if (side == 0)
@@ -378,8 +412,9 @@ namespace Oxide.Plugins
             ulong currentSkin = block.GetWallpaperSkin(side);
             if (currentSkin == 0UL) return;
 
+            float step = GetRotationStep(block);
             float currentRot = side == 0 ? block.wallpaperRotation : block.wallpaperRotation2;
-            float nextRot = Mathf.Repeat(Mathf.Round(currentRot / 90f) * 90f + 90f, 360f);
+            float nextRot = Mathf.Repeat(Mathf.Round(currentRot / step) * step + step, 360f);
 
             ApplyWallpaperWithRotation(block, currentSkin, side, nextRot);
             TrackProtectedWallpaper(block.net.ID.Value, side, currentSkin, nextRot);
@@ -390,12 +425,33 @@ namespace Oxide.Plugins
 
         #endregion
 
-        #region Zero-Decay Protection & Healing (Custom Wallpapers Only)
+        #region Zero-Decay & Exterior Guard Protection (Custom Wallpapers Only)
+
+        private void GuardExteriorWallpapers()
+        {
+            if (_data.ProtectedWallpapers.Count == 0) return;
+
+            foreach (var kvp in _data.ProtectedWallpapers)
+            {
+                if (!kvp.Value.TryGetValue(1, out var side1Info) || side1Info == null || side1Info.SkinId == 0UL)
+                    continue;
+
+                var block = BaseNetworkable.serverEntities.Find(new NetworkableId(kvp.Key)) as BuildingBlock;
+                if (block == null || block.IsDestroyed) continue;
+
+                float rot = IsHorizontalSurface(block) ? side1Info.Rotation : 0f;
+                if (!block.HasWallpaper(1) || block.GetWallpaperSkin(1) != side1Info.SkinId)
+                {
+                    block.SetWallpaper(side1Info.SkinId, 1, rot);
+                    block.wallpaperRotation2 = rot;
+                    block.wallpaperHealth2 = 100f;
+                    block.SendNetworkUpdateImmediate();
+                }
+            }
+        }
 
         private void ScanAndProtectExistingWallpapers()
         {
-            // Only protect wallpapers whose SkinId belongs to our CommunityLibrary (custom Workshop wallpapers),
-            // leaving vanilla wallpapers completely untouched.
             HashSet<ulong> customIds = new HashSet<ulong>(_data.CommunityLibrary.Select(x => x.WorkshopId));
             int added = 0;
 
@@ -490,6 +546,8 @@ namespace Oxide.Plugins
                 if (missingOrWrongSkin)
                 {
                     block.SetWallpaper(info.SkinId, side, rot);
+                    if (side == 0) block.wallpaperRotation = rot;
+                    else block.wallpaperRotation2 = rot;
                     updated = true;
                 }
 
@@ -506,7 +564,7 @@ namespace Oxide.Plugins
 
                 if (updated && _debugDecay)
                 {
-                    Puts($"[Debug] Block {block.net.ID.Value} Side {side} took decay (HP was {beforeHp:F1}, missing={missingOrWrongSkin}) -> Restored to 100 HP & Skin {info.SkinId}");
+                    Puts($"[Debug] Block {block.net.ID.Value} Side {side} restored (HP was {beforeHp:F1}, missing={missingOrWrongSkin}) -> 100 HP & Skin {info.SkinId}");
                 }
             }
 
@@ -603,7 +661,7 @@ namespace Oxide.Plugins
             RaycastHit hit;
             if (!Physics.Raycast(player.eyes.HeadRay(), out hit, 6.0f, Layers.Mask.Construction, QueryTriggerInteraction.Ignore))
             {
-                player.ChatMessage("<color=#ff6b6b>[Wallpaper Check]</color> Look directly at a wall, floor, or ceiling within 6m.");
+                player.ChatMessage("<color=#ff6b6b>[Wallpaper Check]</color> Look directly at a wall, roof, floor, or foundation within 6m.");
                 return;
             }
 
@@ -622,7 +680,7 @@ namespace Oxide.Plugins
             player.ChatMessage(
                 $"<color=#4ecdc4>[Wallpaper Check]</color> Block: <b>{block.ShortPrefabName}</b> (ID: {block.net.ID.Value}) | Aiming Side: <b>{hitSide}</b>\n" +
                 $"• <b>Side 0 (Interior/Floor):</b> Has={block.HasWallpaper(0)} | Skin={block.GetWallpaperSkin(0)} | Rot={block.wallpaperRotation:F0}° | HP={block.wallpaperHealth:F1}/100 | Protected={(prot0 ? "Yes" : "No")}\n" +
-                $"• <b>Side 1 (Exterior/Ceiling):</b> Has={block.HasWallpaper(1)} | Skin={block.GetWallpaperSkin(1)} | Rot={block.wallpaperRotation2:F0}° | HP={block.wallpaperHealth2:F1}/100 | Protected={(prot1 ? "Yes" : "No")}"
+                $"• <b>Side 1 (Exterior/Ceiling/Sides):</b> Has={block.HasWallpaper(1)} | Skin={block.GetWallpaperSkin(1)} | Rot={block.wallpaperRotation2:F0}° | HP={block.wallpaperHealth2:F1}/100 | Protected={(prot1 ? "Yes" : "No")}"
             );
         }
 
@@ -644,7 +702,7 @@ namespace Oxide.Plugins
                 if (IsCustomWallpaperTool(existing))
                 {
                     if (existing.hasCondition) existing.condition = existing.maxCondition;
-                    player.ChatMessage("<color=#4ecdc4>[Wallpaper]</color> You already have a <b>Custom Wallpaper Tool</b> on your hotbar! Press <b>Middle-Click</b> or <b>R</b> to pick a skin (press <b>E</b> on floors/ceilings to rotate 90°).");
+                    player.ChatMessage("<color=#4ecdc4>[Wallpaper]</color> You already have a <b>Custom Wallpaper Tool</b> on your hotbar! Press <b>Middle-Click</b> or <b>R</b> to pick a skin (press <b>E</b> on floors/ceilings to rotate).");
                     return;
                 }
             }
@@ -672,7 +730,7 @@ namespace Oxide.Plugins
                 item.Drop(player.transform.position, Vector3.up);
             }
 
-            player.ChatMessage("<color=#4ecdc4>[Wallpaper]</color> Received <b>Custom Wallpaper Tool</b>! Press <b>Middle-Click</b> or <b>R</b> to choose a skin, <b>Left-Click</b> to apply, and <b>E</b> on floors/ceilings to rotate 90°.");
+            player.ChatMessage("<color=#4ecdc4>[Wallpaper]</color> Received <b>Custom Wallpaper Tool</b>! Press <b>Middle-Click</b> or <b>R</b> to choose a skin, <b>Left-Click</b> to apply, and <b>E</b> on floors/ceilings to rotate.");
         }
 
         private void TryPaintSurface(BasePlayer player, Item toolItem, PlayerSession session, bool justPressed)
@@ -754,17 +812,32 @@ namespace Oxide.Plugins
         {
             string prefab = block.PrefabName;
 
+            // Foundations: top surface -> Side 0 (floor), vertical skirt/sides -> Side 1 (exterior)
             if (prefab.Contains("foundation"))
             {
-                return hitNormal.y > 0.2f ? 0 : -1;
+                Vector3 localNormalFound = block.transform.InverseTransformDirection(hitNormal);
+                return localNormalFound.y > 0.5f ? 0 : 1;
             }
 
-            if (prefab.Contains("floor") || prefab.Contains("roof"))
+            // Angled Roofs (roof / roof.triangle): pitched top exterior slope vs underside interior ceiling
+            if (prefab.Contains("roof"))
             {
-                Vector3 localNormal = block.transform.InverseTransformDirection(hitNormal);
-                return localNormal.y < 0f ? 0 : 1;
+                Vector3 localNormalRoof = block.transform.InverseTransformDirection(hitNormal);
+                // On angled roofs, the outer slope points upward (+Y) and outward (-X or +Z depending on prefab orientation),
+                // while the interior underside points downward (-Y) and inward.
+                if (localNormalRoof.y > 0.15f) return 1;
+                if (localNormalRoof.y < -0.15f) return 0;
+                return localNormalRoof.x > 0f || localNormalRoof.z < 0f ? 1 : 0;
             }
 
+            // Flat Floors / Ceilings: top surface -> Side 1, underside ceiling -> Side 0
+            if (prefab.Contains("floor"))
+            {
+                Vector3 localNormalFloor = block.transform.InverseTransformDirection(hitNormal);
+                return localNormalFloor.y < 0f ? 0 : 1;
+            }
+
+            // Walls, Doorways, Window Frames, Half Walls, Low Walls
             Vector3 localNormalWall = block.transform.InverseTransformDirection(hitNormal);
 
             if (Mathf.Abs(localNormalWall.x) >= Mathf.Abs(localNormalWall.z))
@@ -807,7 +880,7 @@ namespace Oxide.Plugins
                 session.ClearMode = false;
                 session.LastPaintedBlockId = 0;
                 SaveData();
-                player.ChatMessage($"<color=#4ecdc4>[Wallpaper]</color> Equipped <b>{existing.Title}</b> ({workshopId}). Left-click walls, floors, or ceilings!");
+                player.ChatMessage($"<color=#4ecdc4>[Wallpaper]</color> Equipped <b>{existing.Title}</b> ({workshopId}). Left-click walls, roofs, floors, or foundations!");
                 OpenUI(player);
                 return;
             }
