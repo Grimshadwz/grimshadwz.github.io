@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RemoveTool", "Custom", "2.2.0")]
+    [Info("RemoveTool", "Paradox Studios", "1.0.3")]
     [Description("Removes owned items with Salvaged Hammer safely.")]
     public class RemoveTool : RustPlugin
     {
