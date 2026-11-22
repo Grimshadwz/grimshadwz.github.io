@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Night Lantern", "Paradox Studios", "3.1.0")]
+    [Info("Night Lantern", "Paradox Studios", "1.0.0")]
     [Description("Automatically turns ON and OFF Jack O' Lanterns, Tuna Can Lamps, Lanterns, Chinese Lanterns, and Cursed Cauldrons at night")]
     class NightLantern : RustPlugin
     {
