@@ -8,13 +8,11 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("MyBaseCompanion", "Paradox Studios", "1.0.1")]
+    [Info("MyBaseCompanion", "Paradox Studios", "1.0.4")]
     [Description("Silent Deployable Base Companion NPC with custom naming, searchable 25m loot room CUI, saved loadouts, and direct drag-and-drop wardrobe.")]
     public class MyBaseCompanion : RustPlugin
     {
         private const string UI_MAIN = "MyBaseCompanion_UI";
-        private const string PERM_USE = "mybasecompanion.use";
-        private const string PERM_ADMIN = "mybasecompanion.admin";
         private const ulong TOKEN_SKIN_ID = 3349182742;
         private const float SCAN_RADIUS = 25f;
 
@@ -76,12 +74,6 @@ namespace Oxide.Plugins
         }
 
         #region Lifecycle & Hooks
-        private void Init()
-        {
-            permission.RegisterPermission(PERM_USE, this);
-            permission.RegisterPermission(PERM_ADMIN, this);
-        }
-
         private void OnServerInitialized()
         {
             LoadData();
@@ -118,11 +110,6 @@ namespace Oxide.Plugins
         private void CmdGiveCompanion(BasePlayer player, string command, string[] args)
         {
             if (player == null) return;
-            if (!permission.UserHasPermission(player.UserIDString, PERM_USE) && !player.IsAdmin)
-            {
-                player.ChatMessage("<color=#ff5555>You do not have permission to use My Base Companion.</color>");
-                return;
-            }
 
             GiveCompanionToken(player);
             player.ChatMessage("<color=#55ff55>You received a Base Companion Post!</color> Rotate and place it like a small box to position your companion.");
@@ -131,7 +118,7 @@ namespace Oxide.Plugins
         [ConsoleCommand("companion.give")]
         private void ConsoleGiveCompanion(ConsoleSystem.Arg arg)
         {
-            if (arg.Connection != null && !arg.IsAdmin) return;
+            if (arg.Connection != null && !arg.IsAdmin && arg.Connection.authLevel == 0) return;
             if (!arg.HasArgs()) return;
 
             BasePlayer target = BasePlayer.Find(arg.GetString(0));
@@ -161,19 +148,9 @@ namespace Oxide.Plugins
             BaseEntity entity = go.ToBaseEntity();
             if (entity == null || entity.skinID != TOKEN_SKIN_ID) return;
 
-            if (!permission.UserHasPermission(player.UserIDString, PERM_USE) && !player.IsAdmin)
-            {
-                player.ChatMessage("<color=#ff5555>You do not have permission to place a Base Companion.</color>");
-                NextTick(() =>
-                {
-                    if (entity != null && !entity.IsDestroyed) entity.Kill();
-                    GiveCompanionToken(player);
-                });
-                return;
-            }
-
             Vector3 spawnPos = entity.transform.position;
-            Quaternion spawnRot = entity.transform.rotation;
+            // Capture the exact yaw angle the player rotated the deployable box to
+            float yaw = entity.transform.eulerAngles.y;
 
             NextTick(() =>
             {
@@ -181,7 +158,7 @@ namespace Oxide.Plugins
                 {
                     entity.Kill();
                 }
-                SpawnCompanionForPlayer(player.userID, spawnPos, spawnRot, player);
+                SpawnCompanionForPlayer(player.userID, spawnPos, yaw, player);
             });
         }
 
@@ -296,13 +273,26 @@ namespace Oxide.Plugins
             npc.SendNetworkUpdateImmediate();
         }
 
+        private void SetCompanionFacing(BasePlayer npc, float yaw)
+        {
+            if (npc == null || npc.IsDestroyed) return;
+            Quaternion rot = Quaternion.Euler(0f, yaw, 0f);
+            npc.transform.rotation = rot;
+            npc.ServerRotation = rot;
+            npc.eyes.rotation = rot;
+            npc.viewAngles = new Vector3(0f, yaw, 0f);
+            if (npc.net != null)
+            {
+                npc.SendNetworkUpdateImmediate();
+            }
+        }
+
         private void RespawnSavedCompanions()
         {
             foreach (var kvp in _data.ActiveNpcs.ToList())
             {
                 Vector3 pos = new Vector3(kvp.Value.X, kvp.Value.Y, kvp.Value.Z);
-                Quaternion rot = Quaternion.Euler(0f, kvp.Value.RotY, 0f);
-                SpawnCompanionForPlayer(kvp.Key, pos, rot, null);
+                SpawnCompanionForPlayer(kvp.Key, pos, kvp.Value.RotY, null);
             }
         }
 
@@ -316,7 +306,7 @@ namespace Oxide.Plugins
             return null;
         }
 
-        private void SpawnCompanionForPlayer(ulong ownerId, Vector3 pos, Quaternion rot, BasePlayer notifyPlayer)
+        private void SpawnCompanionForPlayer(ulong ownerId, Vector3 pos, float yaw, BasePlayer notifyPlayer)
         {
             foreach (ulong existingId in _npcIds.ToList())
             {
@@ -328,6 +318,7 @@ namespace Oxide.Plugins
                 }
             }
 
+            Quaternion rot = Quaternion.Euler(0f, yaw, 0f);
             BasePlayer npc = CreateNpcEntity(pos, rot) as BasePlayer;
             if (npc == null)
             {
@@ -356,8 +347,18 @@ namespace Oxide.Plugins
             npc.CancelInvoke();
             npc.SetPlayerFlag(BasePlayer.PlayerFlags.SafeZone, true);
 
-            // Re-apply custom name after Spawn() so ScientistNPC.ServerInit() doesn't overwrite it with "Scientist"
+            // Force both ServerRotation and viewAngles so the client renders him facing the exact box rotation
+            SetCompanionFacing(npc, yaw);
             ApplyCompanionName(npc, companionName);
+
+            // Re-sync rotation one tick later after Spawn() finishes initializing eyes/network transform
+            NextTick(() =>
+            {
+                if (npc != null && !npc.IsDestroyed)
+                {
+                    SetCompanionFacing(npc, yaw);
+                }
+            });
 
             if (npc.inventory != null)
             {
@@ -371,7 +372,7 @@ namespace Oxide.Plugins
                 X = pos.x,
                 Y = pos.y,
                 Z = pos.z,
-                RotY = rot.eulerAngles.y
+                RotY = yaw
             };
             SaveData();
 
