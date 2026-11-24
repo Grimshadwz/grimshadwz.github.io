@@ -7,14 +7,16 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RGBLights", "Paradox Studios", "1.5.0")]
-    [Description("TC-locked CUI controller for Red, Green, Blue, and White Industrial Lights with 19 show modes.")]
+    [Info("RGBLights", "Paradox Studios", "1.8.6")]
+    [Description("CUI controller for Red, Green, Blue, and White Industrial Lights with 19 show modes and restart persistence.")]
     public class RGBLights : RustPlugin
     {
         private const string UI_NAME = "RGBLights_UI";
+        private const string TC_BTN_UI = "RGBLights_TCButton";
         private const float TC_SEARCH_RADIUS = 50f;
 
         private Dictionary<ulong, ShowController> activeShows = new Dictionary<ulong, ShowController>();
+        private StoredData storedData = new StoredData();
 
         private enum ShowMode
         {
@@ -40,12 +42,25 @@ namespace Oxide.Plugins
             LightningStorm
         }
 
+        private class SavedShowEntry
+        {
+            public ShowMode Mode = ShowMode.Off;
+            public float Interval = 0.5f;
+            public bool ControlWiredLights = false;
+        }
+
+        private class StoredData
+        {
+            public Dictionary<ulong, SavedShowEntry> Shows = new Dictionary<ulong, SavedShowEntry>();
+        }
+
         private class ShowController
         {
             public ulong TcNetId;
             public Vector3 CenterPos;
             public ShowMode Mode = ShowMode.Off;
             public float Interval = 0.5f;
+            public bool ControlWiredLights = false;
             public int Step = 0;
             public Timer LoopTimer;
             public List<IOEntity> RedLights = new List<IOEntity>();
@@ -55,13 +70,150 @@ namespace Oxide.Plugins
             public List<IOEntity> AllLights = new List<IOEntity>();
         }
 
+        #region Data Persistence
+
+        private void LoadData()
+        {
+            try
+            {
+                storedData = Interface.Oxide.DataFileSystem.ReadObject<StoredData>(Name);
+                if (storedData == null || storedData.Shows == null)
+                {
+                    storedData = new StoredData();
+                }
+            }
+            catch
+            {
+                storedData = new StoredData();
+            }
+        }
+
+        private void SaveData()
+        {
+            Interface.Oxide.DataFileSystem.WriteObject(Name, storedData);
+        }
+
+        private void UpdateSavedShow(ShowController show)
+        {
+            if (show.Mode == ShowMode.Off && !show.ControlWiredLights)
+            {
+                storedData.Shows.Remove(show.TcNetId);
+            }
+            else
+            {
+                storedData.Shows[show.TcNetId] = new SavedShowEntry
+                {
+                    Mode = show.Mode,
+                    Interval = show.Interval,
+                    ControlWiredLights = show.ControlWiredLights
+                };
+            }
+            SaveData();
+        }
+
+        #endregion
+
         #region Oxide Hooks
+
+        private void Init()
+        {
+            LoadData();
+        }
+
+        private void OnServerInitialized()
+        {
+            timer.Once(5f, RestoreSavedShows);
+        }
+
+        private void OnServerSave()
+        {
+            SaveData();
+        }
+
+        private void OnLootEntity(BasePlayer player, BaseEntity entity)
+        {
+            if (player == null || entity == null) return;
+
+            BuildingPrivlidge tc = entity as BuildingPrivlidge;
+            if (tc == null) return;
+
+            if (!tc.IsAuthed(player)) return;
+
+            OpenTCButton(player);
+        }
+
+        private void OnPlayerLootEnd(PlayerLoot inventory)
+        {
+            if (inventory == null) return;
+
+            BasePlayer player = inventory.baseEntity;
+            if (player != null)
+            {
+                CuiHelper.DestroyUi(player, TC_BTN_UI);
+            }
+        }
+
+        private void RestoreSavedShows()
+        {
+            if (storedData.Shows.Count == 0) return;
+
+            List<ulong> invalidTcs = new List<ulong>();
+            int restoredCount = 0;
+
+            foreach (var kvp in storedData.Shows)
+            {
+                ulong tcId = kvp.Key;
+                SavedShowEntry entry = kvp.Value;
+
+                BuildingPrivlidge tc = BaseNetworkable.serverEntities.Find(new NetworkableId(tcId)) as BuildingPrivlidge;
+                if (tc == null || tc.IsDestroyed)
+                {
+                    invalidTcs.Add(tcId);
+                    continue;
+                }
+
+                ShowController show = new ShowController
+                {
+                    TcNetId = tcId,
+                    CenterPos = tc.transform.position,
+                    Mode = entry.Mode,
+                    Interval = Mathf.Clamp(entry.Interval, 0.1f, 5.0f),
+                    ControlWiredLights = entry.ControlWiredLights
+                };
+
+                activeShows[tcId] = show;
+
+                if (show.Mode != ShowMode.Off)
+                {
+                    RefreshLightsInTC(show, tc);
+                    StartShowLoop(show);
+                    restoredCount++;
+                }
+            }
+
+            if (invalidTcs.Count > 0)
+            {
+                foreach (ulong id in invalidTcs)
+                {
+                    storedData.Shows.Remove(id);
+                }
+                SaveData();
+            }
+
+            if (restoredCount > 0)
+            {
+                Puts($"Restored {restoredCount} active RGB light show(s).");
+            }
+        }
 
         private void Unload()
         {
+            SaveData();
+
             foreach (var player in BasePlayer.activePlayerList)
             {
                 CuiHelper.DestroyUi(player, UI_NAME);
+                CuiHelper.DestroyUi(player, TC_BTN_UI);
             }
 
             foreach (var show in activeShows.Values)
@@ -78,14 +230,19 @@ namespace Oxide.Plugins
         [ChatCommand("rgb")]
         private void CmdRgb(BasePlayer player, string command, string[] args)
         {
-            BuildingPrivlidge tc = player.GetBuildingPrivilege();
+            OpenControllerForPlayer(player);
+        }
+
+        private void OpenControllerForPlayer(BasePlayer player)
+        {
+            BuildingPrivlidge tc = GetActiveTC(player);
             if (tc == null)
             {
                 SendReply(player, "<color=#ff5555>[RGB Lights]</color> You must be standing inside a Tool Cupboard range.");
                 return;
             }
 
-            if (!player.IsBuildingAuthed())
+            if (!tc.IsAuthed(player))
             {
                 SendReply(player, "<color=#ff5555>[RGB Lights]</color> Only players authorized on this TC can control the lights.");
                 return;
@@ -106,9 +263,46 @@ namespace Oxide.Plugins
             OpenUI(player, show);
         }
 
+        private BuildingPrivlidge GetActiveTC(BasePlayer player)
+        {
+            if (player == null) return null;
+
+            if (player.inventory?.loot?.entitySource is BuildingPrivlidge lootedTc && !lootedTc.IsDestroyed)
+            {
+                return lootedTc;
+            }
+
+            return player.GetBuildingPrivilege();
+        }
+
         #endregion
 
         #region Light Discovery & Control
+
+        private bool IsEntityWired(IOEntity io)
+        {
+            if (io == null) return false;
+
+            if (io.inputs != null)
+            {
+                for (int i = 0; i < io.inputs.Length; i++)
+                {
+                    if (io.inputs[i].connectedTo.Get() != null)
+                        return true;
+                }
+            }
+
+            if (io.outputs != null)
+            {
+                for (int i = 0; i < io.outputs.Length; i++)
+                {
+                    if (io.outputs[i].connectedTo.Get() != null)
+                        return true;
+                }
+            }
+
+            return false;
+        }
 
         private void RefreshLightsInTC(ShowController show, BuildingPrivlidge tc, BasePlayer debugPlayer = null)
         {
@@ -121,6 +315,7 @@ namespace Oxide.Plugins
             Vector3 tcPos = tc.transform.position;
             BuildingManager.Building tcBuilding = tc.GetBuilding();
             List<string> debugFound = new List<string>();
+            int skippedWired = 0;
 
             foreach (var netEntity in BaseNetworkable.serverEntities)
             {
@@ -156,6 +351,12 @@ namespace Oxide.Plugins
 
                 if (!prefab.Contains("industrial") && !prefab.Contains("wall.light") && !prefab.Contains("wall_light")) continue;
 
+                if (!show.ControlWiredLights && IsEntityWired(io))
+                {
+                    skippedWired++;
+                    continue;
+                }
+
                 if (prefab.Contains("red"))
                 {
                     show.RedLights.Add(io);
@@ -174,7 +375,6 @@ namespace Oxide.Plugins
                 }
             }
 
-            // Build spatial list sorted clockwise around the TC for Chase/Wave modes
             var combined = new List<IOEntity>();
             combined.AddRange(show.RedLights);
             combined.AddRange(show.GreenLights);
@@ -188,8 +388,15 @@ namespace Oxide.Plugins
             int total = show.AllLights.Count;
             if (total == 0 && debugPlayer != null)
             {
-                string summary = debugFound.Count > 0 ? string.Join(", ", debugFound) : "None";
-                SendReply(debugPlayer, $"<color=#ffaa00>[RGB Debug]</color> 0 industrial lights matched. Nearby light entities in TC: {summary}");
+                if (skippedWired > 0)
+                {
+                    SendReply(debugPlayer, $"<color=#ffaa00>[RGB Lights]</color> Found {skippedWired} wired light(s), currently ignored. Click 'WIRED LIGHTS: IGNORED' in the UI to include them.");
+                }
+                else
+                {
+                    string summary = debugFound.Count > 0 ? string.Join(", ", debugFound) : "None";
+                    SendReply(debugPlayer, $"<color=#ffaa00>[RGB Debug]</color> 0 industrial lights matched. Nearby light entities in TC: {summary}");
+                }
             }
         }
 
@@ -210,55 +417,55 @@ namespace Oxide.Plugins
 
             if (show.Mode == ShowMode.Off)
             {
-                SetGroupPower(show.RedLights, false);
-                SetGroupPower(show.GreenLights, false);
-                SetGroupPower(show.BlueLights, false);
-                SetGroupPower(show.WhiteLights, false);
+                SetGroupPower(show, show.RedLights, false);
+                SetGroupPower(show, show.GreenLights, false);
+                SetGroupPower(show, show.BlueLights, false);
+                SetGroupPower(show, show.WhiteLights, false);
                 return;
             }
 
             if (show.Mode == ShowMode.SolidWhite)
             {
-                SetGroupPower(show.RedLights, false);
-                SetGroupPower(show.GreenLights, false);
-                SetGroupPower(show.BlueLights, false);
-                SetGroupPower(show.WhiteLights, true);
+                SetGroupPower(show, show.RedLights, false);
+                SetGroupPower(show, show.GreenLights, false);
+                SetGroupPower(show, show.BlueLights, false);
+                SetGroupPower(show, show.WhiteLights, true);
                 return;
             }
 
             if (show.Mode == ShowMode.SolidRed)
             {
-                SetGroupPower(show.RedLights, true);
-                SetGroupPower(show.GreenLights, false);
-                SetGroupPower(show.BlueLights, false);
-                SetGroupPower(show.WhiteLights, false);
+                SetGroupPower(show, show.RedLights, true);
+                SetGroupPower(show, show.GreenLights, false);
+                SetGroupPower(show, show.BlueLights, false);
+                SetGroupPower(show, show.WhiteLights, false);
                 return;
             }
 
             if (show.Mode == ShowMode.SolidGreen)
             {
-                SetGroupPower(show.RedLights, false);
-                SetGroupPower(show.GreenLights, true);
-                SetGroupPower(show.BlueLights, false);
-                SetGroupPower(show.WhiteLights, false);
+                SetGroupPower(show, show.RedLights, false);
+                SetGroupPower(show, show.GreenLights, true);
+                SetGroupPower(show, show.BlueLights, false);
+                SetGroupPower(show, show.WhiteLights, false);
                 return;
             }
 
             if (show.Mode == ShowMode.SolidBlue)
             {
-                SetGroupPower(show.RedLights, false);
-                SetGroupPower(show.GreenLights, false);
-                SetGroupPower(show.BlueLights, true);
-                SetGroupPower(show.WhiteLights, false);
+                SetGroupPower(show, show.RedLights, false);
+                SetGroupPower(show, show.GreenLights, false);
+                SetGroupPower(show, show.BlueLights, true);
+                SetGroupPower(show, show.WhiteLights, false);
                 return;
             }
 
             if (show.Mode == ShowMode.AllLightsOn)
             {
-                SetGroupPower(show.RedLights, true);
-                SetGroupPower(show.GreenLights, true);
-                SetGroupPower(show.BlueLights, true);
-                SetGroupPower(show.WhiteLights, true);
+                SetGroupPower(show, show.RedLights, true);
+                SetGroupPower(show, show.GreenLights, true);
+                SetGroupPower(show, show.BlueLights, true);
+                SetGroupPower(show, show.WhiteLights, true);
                 return;
             }
 
@@ -272,45 +479,43 @@ namespace Oxide.Plugins
             {
                 case ShowMode.Cycle:
                     int cycleIdx = show.Step % 4;
-                    SetGroupPower(show.RedLights, cycleIdx == 0);
-                    SetGroupPower(show.GreenLights, cycleIdx == 1);
-                    SetGroupPower(show.BlueLights, cycleIdx == 2);
-                    SetGroupPower(show.WhiteLights, cycleIdx == 3);
+                    SetGroupPower(show, show.RedLights, cycleIdx == 0);
+                    SetGroupPower(show, show.GreenLights, cycleIdx == 1);
+                    SetGroupPower(show, show.BlueLights, cycleIdx == 2);
+                    SetGroupPower(show, show.WhiteLights, cycleIdx == 3);
                     break;
 
                 case ShowMode.ColorMix:
                     int mixIdx = show.Step % 7;
-                    SetGroupPower(show.RedLights, mixIdx == 0 || mixIdx == 1 || mixIdx == 5 || mixIdx == 6);
-                    SetGroupPower(show.GreenLights, mixIdx == 1 || mixIdx == 2 || mixIdx == 3 || mixIdx == 6);
-                    SetGroupPower(show.BlueLights, mixIdx == 3 || mixIdx == 4 || mixIdx == 5 || mixIdx == 6);
-                    SetGroupPower(show.WhiteLights, mixIdx == 6);
+                    SetGroupPower(show, show.RedLights, mixIdx == 0 || mixIdx == 1 || mixIdx == 5 || mixIdx == 6);
+                    SetGroupPower(show, show.GreenLights, mixIdx == 1 || mixIdx == 2 || mixIdx == 3 || mixIdx == 6);
+                    SetGroupPower(show, show.BlueLights, mixIdx == 3 || mixIdx == 4 || mixIdx == 5 || mixIdx == 6);
+                    SetGroupPower(show, show.WhiteLights, mixIdx == 6);
                     break;
 
                 case ShowMode.PartyRandom:
-                    SetRandomIndividualPower(show.AllLights, 0.5f);
+                    SetRandomIndividualPower(show, show.AllLights, 0.5f);
                     break;
 
                 case ShowMode.WhiteStrobe:
                     bool strobeOn = (show.Step % 2) == 0;
-                    SetGroupPower(show.RedLights, false);
-                    SetGroupPower(show.GreenLights, false);
-                    SetGroupPower(show.BlueLights, false);
-                    SetGroupPower(show.WhiteLights, strobeOn);
+                    SetGroupPower(show, show.RedLights, false);
+                    SetGroupPower(show, show.GreenLights, false);
+                    SetGroupPower(show, show.BlueLights, false);
+                    SetGroupPower(show, show.WhiteLights, strobeOn);
                     break;
 
                 case ShowMode.Police:
-                    // Double-flash red, then double-flash blue
                     int pStep = show.Step % 6;
                     bool redOn = (pStep == 0 || pStep == 2);
                     bool blueOn = (pStep == 3 || pStep == 5);
-                    SetGroupPower(show.RedLights, redOn);
-                    SetGroupPower(show.BlueLights, blueOn);
-                    SetGroupPower(show.GreenLights, false);
-                    SetGroupPower(show.WhiteLights, false);
+                    SetGroupPower(show, show.RedLights, redOn);
+                    SetGroupPower(show, show.BlueLights, blueOn);
+                    SetGroupPower(show, show.GreenLights, false);
+                    SetGroupPower(show, show.WhiteLights, false);
                     break;
 
                 case ShowMode.ChaseWave:
-                    // Chases clockwise around the base one light at a time (with 2-light tail)
                     CleanDestroyed(show.AllLights);
                     int count = show.AllLights.Count;
                     if (count > 0)
@@ -319,83 +524,73 @@ namespace Oxide.Plugins
                         int tail = (show.Step - 1 + count) % count;
                         for (int i = 0; i < count; i++)
                         {
-                            ApplyLightPower(show.AllLights[i], i == head || (count > 2 && i == tail));
+                            ApplyLightPower(show, show.AllLights[i], i == head || (count > 2 && i == tail));
                         }
                     }
                     break;
 
                 case ShowMode.SparkleTwinkle:
-                    // Sparse 25% random shimmer across all lights
-                    SetRandomIndividualPower(show.AllLights, 0.25f);
+                    SetRandomIndividualPower(show, show.AllLights, 0.25f);
                     break;
 
                 case ShowMode.AllLightTwinkle:
-                    // Christmas tree twinkle: keeps ~80% of all lights lit while ~20% gently blink off/on each tick
-                    SetRandomIndividualPower(show.AllLights, 0.80f);
+                    SetRandomIndividualPower(show, show.AllLights, 0.80f);
                     break;
 
                 case ShowMode.FireCandle:
-                    // Warm Red base with flickering White/Green sparks
-                    SetGroupPower(show.RedLights, true);
-                    SetGroupPower(show.BlueLights, false);
-                    SetRandomIndividualPower(show.WhiteLights, 0.35f);
-                    SetRandomIndividualPower(show.GreenLights, 0.2f);
+                    SetGroupPower(show, show.RedLights, true);
+                    SetGroupPower(show, show.BlueLights, false);
+                    SetRandomIndividualPower(show, show.WhiteLights, 0.35f);
+                    SetRandomIndividualPower(show, show.GreenLights, 0.2f);
                     break;
 
                 case ShowMode.RainbowFade:
-                    // Overlapping smooth transitions: R -> R+G -> G -> G+B -> B -> B+W -> W -> W+R
                     int rStep = show.Step % 8;
-                    SetGroupPower(show.RedLights, rStep == 0 || rStep == 1 || rStep == 7);
-                    SetGroupPower(show.GreenLights, rStep == 1 || rStep == 2 || rStep == 3);
-                    SetGroupPower(show.BlueLights, rStep == 3 || rStep == 4 || rStep == 5);
-                    SetGroupPower(show.WhiteLights, rStep == 5 || rStep == 6 || rStep == 7);
+                    SetGroupPower(show, show.RedLights, rStep == 0 || rStep == 1 || rStep == 7);
+                    SetGroupPower(show, show.GreenLights, rStep == 1 || rStep == 2 || rStep == 3);
+                    SetGroupPower(show, show.BlueLights, rStep == 3 || rStep == 4 || rStep == 5);
+                    SetGroupPower(show, show.WhiteLights, rStep == 5 || rStep == 6 || rStep == 7);
                     break;
 
                 case ShowMode.BiColorPulse:
-                    // Alternates warm (Red+White) vs cool (Blue+Green)
                     bool warm = (show.Step % 2) == 0;
-                    SetGroupPower(show.RedLights, warm);
-                    SetGroupPower(show.WhiteLights, warm);
-                    SetGroupPower(show.BlueLights, !warm);
-                    SetGroupPower(show.GreenLights, !warm);
+                    SetGroupPower(show, show.RedLights, warm);
+                    SetGroupPower(show, show.WhiteLights, warm);
+                    SetGroupPower(show, show.BlueLights, !warm);
+                    SetGroupPower(show, show.GreenLights, !warm);
                     break;
 
                 case ShowMode.Cyberpunk:
-                    // Neon Blue & Red constant glow with pulsing Green/White accents
                     int cStep = show.Step % 4;
-                    SetGroupPower(show.BlueLights, true);
-                    SetGroupPower(show.RedLights, cStep != 2);
-                    SetGroupPower(show.GreenLights, cStep == 1 || cStep == 2);
-                    SetGroupPower(show.WhiteLights, cStep == 3);
+                    SetGroupPower(show, show.BlueLights, true);
+                    SetGroupPower(show, show.RedLights, cStep != 2);
+                    SetGroupPower(show, show.GreenLights, cStep == 1 || cStep == 2);
+                    SetGroupPower(show, show.WhiteLights, cStep == 3);
                     break;
 
                 case ShowMode.Christmas:
-                    // Classic Red & Green alternating with steady White accent
                     bool xmasFlip = (show.Step % 2) == 0;
-                    SetGroupPower(show.RedLights, xmasFlip);
-                    SetGroupPower(show.GreenLights, !xmasFlip);
-                    SetGroupPower(show.WhiteLights, true);
-                    SetGroupPower(show.BlueLights, false);
+                    SetGroupPower(show, show.RedLights, xmasFlip);
+                    SetGroupPower(show, show.GreenLights, !xmasFlip);
+                    SetGroupPower(show, show.WhiteLights, true);
+                    SetGroupPower(show, show.BlueLights, false);
                     break;
 
                 case ShowMode.LightningStorm:
-                    // Dark moody blue glow with sudden white/blue lightning double-strikes
                     int lRoll = UnityEngine.Random.Range(0, 10);
                     if (lRoll == 0)
                     {
-                        // Lightning flash!
-                        SetGroupPower(show.WhiteLights, true);
-                        SetGroupPower(show.BlueLights, true);
-                        SetGroupPower(show.RedLights, false);
-                        SetGroupPower(show.GreenLights, false);
+                        SetGroupPower(show, show.WhiteLights, true);
+                        SetGroupPower(show, show.BlueLights, true);
+                        SetGroupPower(show, show.RedLights, false);
+                        SetGroupPower(show, show.GreenLights, false);
                     }
                     else
                     {
-                        // Dim storm ambient
-                        SetGroupPower(show.WhiteLights, false);
-                        SetGroupPower(show.RedLights, false);
-                        SetGroupPower(show.GreenLights, false);
-                        SetRandomIndividualPower(show.BlueLights, 0.3f);
+                        SetGroupPower(show, show.WhiteLights, false);
+                        SetGroupPower(show, show.RedLights, false);
+                        SetGroupPower(show, show.GreenLights, false);
+                        SetRandomIndividualPower(show, show.BlueLights, 0.3f);
                     }
                     break;
             }
@@ -414,7 +609,7 @@ namespace Oxide.Plugins
             }
         }
 
-        private void SetGroupPower(List<IOEntity> lights, bool turnOn)
+        private void SetGroupPower(ShowController show, List<IOEntity> lights, bool turnOn)
         {
             for (int i = lights.Count - 1; i >= 0; i--)
             {
@@ -425,11 +620,11 @@ namespace Oxide.Plugins
                     continue;
                 }
 
-                ApplyLightPower(light, turnOn);
+                ApplyLightPower(show, light, turnOn);
             }
         }
 
-        private void SetRandomIndividualPower(List<IOEntity> lights, float onChance)
+        private void SetRandomIndividualPower(ShowController show, List<IOEntity> lights, float onChance)
         {
             for (int i = lights.Count - 1; i >= 0; i--)
             {
@@ -441,20 +636,47 @@ namespace Oxide.Plugins
                 }
 
                 bool state = UnityEngine.Random.value < onChance;
-                ApplyLightPower(light, state);
+                ApplyLightPower(show, light, state);
             }
         }
 
-        private void ApplyLightPower(IOEntity light, bool turnOn)
+        private void ApplyLightPower(ShowController show, IOEntity light, bool turnOn)
         {
+            if (!show.ControlWiredLights && IsEntityWired(light))
+                return;
+
             int powerAmount = turnOn ? Mathf.Max(1, light.ConsumptionAmount()) : 0;
-            light.UpdateFromInput(powerAmount, 0);
-            light.SendNetworkUpdateImmediate();
+
+            if (!IsEntityWired(light))
+            {
+                light.UpdateFromInput(powerAmount, 0);
+            }
+            else
+            {
+                light.currentEnergy = powerAmount;
+                light.UpdateHasPower(powerAmount, 0);
+            }
         }
 
         #endregion
 
         #region CUI Interface & Console Handlers
+
+        private void OpenTCButton(BasePlayer player)
+        {
+            CuiHelper.DestroyUi(player, TC_BTN_UI);
+
+            var elements = new CuiElementContainer();
+
+            elements.Add(new CuiButton
+            {
+                Button = { Command = "rgblights.opentc", Color = "0.20 0.60 0.32 0.95" },
+                RectTransform = { AnchorMin = "0.778 0.832", AnchorMax = "0.943 0.856" },
+                Text = { Text = "WIRELESS RGB TOGGLE", FontSize = 11, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+            }, "Overlay", TC_BTN_UI);
+
+            CuiHelper.AddUi(player, elements);
+        }
 
         private void OpenUI(BasePlayer player, ShowController show)
         {
@@ -462,7 +684,6 @@ namespace Oxide.Plugins
 
             var elements = new CuiElementContainer();
 
-            // Expanded panel to hold 19 modes cleanly (10 rows x 2 columns)
             elements.Add(new CuiPanel
             {
                 Image = { Color = "0.11 0.11 0.13 0.96" },
@@ -470,14 +691,12 @@ namespace Oxide.Plugins
                 CursorEnabled = true
             }, "Overlay", UI_NAME);
 
-            // Header
             elements.Add(new CuiLabel
             {
                 Text = { Text = "TC RGB LIGHT CONTROLLER (19 MODES)", FontSize = 15, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
                 RectTransform = { AnchorMin = "0.05 0.92", AnchorMax = "0.86 0.98" }
             }, UI_NAME);
 
-            // Close Button
             elements.Add(new CuiButton
             {
                 Button = { Command = "rgblights.close", Color = "0.75 0.2 0.2 1" },
@@ -485,15 +704,14 @@ namespace Oxide.Plugins
                 Text = { Text = "X", FontSize = 13, Align = TextAnchor.MiddleCenter }
             }, UI_NAME);
 
-            // Light Count Readout
-            string countText = $"Found in TC: <color=#ff5555>R:{show.RedLights.Count}</color> | <color=#55ff55>G:{show.GreenLights.Count}</color> | <color=#55aaff>B:{show.BlueLights.Count}</color> | <color=#ffffff>W:{show.WhiteLights.Count}</color>";
+            string wiredStateStr = show.ControlWiredLights ? "<color=#ffaa55>Wired: ON</color>" : "<color=#77dd77>Wired: IGNORED</color>";
+            string countText = $"Found: <color=#ff5555>R:{show.RedLights.Count}</color> | <color=#55ff55>G:{show.GreenLights.Count}</color> | <color=#55aaff>B:{show.BlueLights.Count}</color> | <color=#ffffff>W:{show.WhiteLights.Count}</color> ({wiredStateStr})";
             elements.Add(new CuiLabel
             {
                 Text = { Text = countText, FontSize = 12, Align = TextAnchor.MiddleCenter },
                 RectTransform = { AnchorMin = "0.05 0.87", AnchorMax = "0.95 0.915" }
             }, UI_NAME);
 
-            // 2-Column Grid of 19 Modes (10 rows)
             // Row 1
             AddModeButton(elements, "ALL LIGHTS ON", ShowMode.AllLightsOn, show.Mode, "0.05 0.805", "0.48 0.86");
             AddModeButton(elements, "ALL LIGHT TWINKLE", ShowMode.AllLightTwinkle, show.Mode, "0.52 0.805", "0.95 0.86");
@@ -532,6 +750,15 @@ namespace Oxide.Plugins
 
             // Row 10
             AddModeButton(elements, "HOLIDAY (R/G/W)", ShowMode.Christmas, show.Mode, "0.05 0.22", "0.48 0.275");
+
+            string wiredBtnLabel = show.ControlWiredLights ? "WIRED LIGHTS: INCLUDED" : "WIRED LIGHTS: IGNORED";
+            string wiredBtnColor = show.ControlWiredLights ? "0.70 0.42 0.15 1" : "0.22 0.45 0.32 1";
+            elements.Add(new CuiButton
+            {
+                Button = { Command = "rgblights.togglewired", Color = wiredBtnColor },
+                RectTransform = { AnchorMin = "0.52 0.22", AnchorMax = "0.95 0.275" },
+                Text = { Text = wiredBtnLabel, FontSize = 11, Align = TextAnchor.MiddleCenter }
+            }, UI_NAME);
 
             // Speed Label
             elements.Add(new CuiLabel
@@ -586,11 +813,56 @@ namespace Oxide.Plugins
             }, UI_NAME);
         }
 
+        [ConsoleCommand("rgblights.opentc")]
+        private void ConsoleOpenFromTC(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+
+            BuildingPrivlidge tc = GetActiveTC(player);
+            CuiHelper.DestroyUi(player, TC_BTN_UI);
+            player.EndLooting();
+
+            if (tc == null || !tc.IsAuthed(player)) return;
+
+            ulong tcId = tc.net.ID.Value;
+            if (!activeShows.TryGetValue(tcId, out ShowController show))
+            {
+                show = new ShowController
+                {
+                    TcNetId = tcId,
+                    CenterPos = tc.transform.position
+                };
+                activeShows[tcId] = show;
+            }
+
+            RefreshLightsInTC(show, tc, player);
+            OpenUI(player, show);
+        }
+
         [ConsoleCommand("rgblights.close")]
         private void ConsoleClose(ConsoleSystem.Arg arg)
         {
             var player = arg.Player();
             if (player != null) CuiHelper.DestroyUi(player, UI_NAME);
+        }
+
+        [ConsoleCommand("rgblights.togglewired")]
+        private void ConsoleToggleWired(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !ValidateTCAuth(player, out BuildingPrivlidge tc, out ShowController show)) return;
+
+            if (show.ControlWiredLights)
+            {
+                SetGroupPower(show, show.AllLights, false);
+            }
+
+            show.ControlWiredLights = !show.ControlWiredLights;
+            UpdateSavedShow(show);
+            RefreshLightsInTC(show, tc, player);
+            StartShowLoop(show);
+            OpenUI(player, show);
         }
 
         [ConsoleCommand("rgblights.rescan")]
@@ -612,6 +884,7 @@ namespace Oxide.Plugins
             if (arg.HasArgs() && Enum.TryParse(arg.GetString(0), out ShowMode newMode))
             {
                 show.Mode = newMode;
+                UpdateSavedShow(show);
                 RefreshLightsInTC(show, tc);
                 StartShowLoop(show);
                 OpenUI(player, show);
@@ -628,6 +901,7 @@ namespace Oxide.Plugins
             {
                 float newSpeed = arg.GetFloat(0, 0.5f);
                 show.Interval = Mathf.Clamp(newSpeed, 0.1f, 5.0f);
+                UpdateSavedShow(show);
                 if (!IsStaticMode(show.Mode))
                 {
                     StartShowLoop(show);
@@ -638,10 +912,10 @@ namespace Oxide.Plugins
 
         private bool ValidateTCAuth(BasePlayer player, out BuildingPrivlidge tc, out ShowController show)
         {
-            tc = player.GetBuildingPrivilege();
+            tc = GetActiveTC(player);
             show = null;
 
-            if (tc == null || !player.IsBuildingAuthed())
+            if (tc == null || !tc.IsAuthed(player))
             {
                 CuiHelper.DestroyUi(player, UI_NAME);
                 return false;
